@@ -1,0 +1,1113 @@
+   501→        return 0.0
+   502→    return h / math.log2(n)
+   503→
+   504→
+   505→def features_from_block(block: dict) -> tuple[list[float], dict]:
+   506→    """Compute the 9 Φ-features + per-vector data for a Solana block."""
+   507→    txs = block.get("transactions") or []
+   508→    fee_counter = Counter()
+   509→    cu_counter = Counter()        # log10-bucketed CU (used for f5)
+   510→    cu_linear_counter = Counter() # linear-bucketed CU (used for f8 — distinct from f5)
+   511→    program_counter = Counter()
+   512→    account_counter = Counter()
+   513→    instr_count_counter = Counter()
+   514→    err_counter = Counter()
+   515→    acct_per_tx_counter = Counter()   # for f7: accounts-per-tx complexity entropy
+   516→    joint_fee_cu_counter = Counter()  # for f9: joint fee × CU correlation entropy
+   517→
+   518→    total_lamports = 0
+   519→    successful = 0
+   520→    failed = 0
+   521→
+   522→    for entry in txs:
+   523→        meta = entry.get("meta") or {}
+   524→        tx = entry.get("transaction") or {}
+   525→        msg = (tx.get("message") if isinstance(tx, dict) else {}) or {}
+   526→
+   527→        fee = int(meta.get("fee") or 0)
+   528→        cu = int(meta.get("computeUnitsConsumed") or 0)
+   529→        err = meta.get("err")
+   530→
+   531→        # Bin lamport fees and CU into log buckets for entropy stability
+   532→        fee_bucket = 0 if fee == 0 else int(math.floor(math.log10(fee + 1)))
+   533→        cu_bucket = 0 if cu == 0 else int(math.floor(math.log10(cu + 1)))
+   534→        fee_counter[fee_bucket] += 1
+   535→        cu_counter[cu_bucket] += 1
+   536→        # Linear CU bucket for f8 (distinct from log10 cu_bucket used in f5)
+   537→        cu_lin_bucket = (0 if cu == 0 else
+   538→                         1 if cu < 50_000 else
+   539→                         2 if cu < 200_000 else
+   540→                         3 if cu < 500_000 else
+   541→                         4 if cu < 1_000_000 else 5)
+   542→        cu_linear_counter[cu_lin_bucket] += 1
+   543→
+   544→        if err is None:
+   545→            successful += 1
+   546→            err_counter["ok"] += 1
+   547→        else:
+   548→            failed += 1
+   549→            err_counter["err"] += 1
+   550→
+   551→        accts = msg.get("accountKeys") or []
+   552→        for a in accts:
+   553→            # accountKeys may be strings or {"pubkey": ...} objects
+   554→            key = a if isinstance(a, str) else a.get("pubkey") if isinstance(a, dict) else None
+   555→            if key:
+   556→                account_counter[key] += 1
+   557→
+   558→        # f7 tracking: bin accounts-per-tx into log2 buckets (tx complexity diversity)
+   559→        n_accts = len(accts)
+   560→        acct_bin = 0 if n_accts == 0 else min(5, int(math.floor(math.log2(n_accts + 1))))
+   561→        acct_per_tx_counter[acct_bin] += 1
+   562→
+   563→        # f9 tracking: joint (fee_bucket, cu_bucket) for correlation entropy
+   564→        joint_fee_cu_counter[(fee_bucket, cu_bucket)] += 1
+   565→
+   566→        instrs = msg.get("instructions") or []
+   567→        instr_count_counter[len(instrs)] += 1
+   568→        for ix in instrs:
+   569→            pid_idx = ix.get("programIdIndex")
+   570→            if isinstance(pid_idx, int) and 0 <= pid_idx < len(accts):
+   571→                pid = accts[pid_idx] if isinstance(accts[pid_idx], str) else (accts[pid_idx].get("pubkey") if isinstance(accts[pid_idx], dict) else None)
+   572→                if pid:
+   573→                    program_counter[pid] += 1
+   574→
+   575→        total_lamports += fee
+   576→
+   577→    # f1..f9 per L1.1 (Solana-mapped):
+   578→    # f1 fee entropy, f2 account diversity, f3 tx-success ratio entropy,
+   579→    # f4 program diversity, f5 cu entropy, f6 instr-count entropy,
+   580→    # f7 program concentration (1-Gini-style proxy via top-k share),
+   581→    # f8 cu/fee correlation proxy, f9 reserved (set to overall block entropy).
+   582→    f1 = shannon(fee_counter)
+   583→    f2 = shannon(account_counter)
+   584→    f3 = shannon(err_counter)
+   585→    f4 = shannon(program_counter)
+   586→    f5 = shannon(cu_counter)
+   587→    f6 = shannon(instr_count_counter)
+   588→    # f7: Shannon entropy of accounts-per-tx distribution (tx complexity diversity)
+   589→    #     H(log2-binned account counts per tx) — distinct from f2 (unique accounts)
+   590→    f7 = shannon(acct_per_tx_counter)
+   591→    # f8: Shannon entropy of CU linear-bucket distribution (distinct from f5)
+   592→    #     f5 uses log10 buckets (scale-invariant); f8 uses linear buckets (scale-sensitive)
+   593→    #     This captures whether CU distribution is skewed toward specific cost tiers
+   594→    f8 = shannon(cu_linear_counter)
+   595→    # f9: Shannon entropy of joint (fee_bucket × cu_bucket) distribution
+   596→    #     Captures fee-compute correlation patterns — independent signal from f1/f5
+   597→    f9 = shannon(joint_fee_cu_counter)
+   598→
+   599→    feats = [f1, f2, f3, f4, f5, f6, f7, f8, f9]
+   600→
+   601→    stats = {
+   602→        "tx_count": len(txs),
+   603→        "successful": successful,
+   604→        "failed": failed,
+   605→        "total_fee_lamports": total_lamports,
+   606→        "unique_programs": len(program_counter),
+   607→        "unique_accounts": len(account_counter),
+   608→        "phi": sum(feats) / 9.0,
+   609→    }
+   610→    return feats, stats
+   611→
+   612→
+   613→def vector_from_features(feats: list[float], slot: int) -> list[float]:
+   614→    """Expand the 9 features into a deterministic 128-dim behavioural vector.
+   615→    Bands 0-15 = f1, 16-31 = f2, ... 128-143 = f9 (last 17 reserved for slot
+   616→    salt to prevent collapse to a single FAISS centroid).
+   617→    """
+   618→    out: list[float] = []
+   619→    band = DIM // 9
+   620→    for v in feats:
+   621→        out.extend([float(v)] * band)
+   622→    # pad to DIM with a deterministic slot-derived salt
+   623→    seed = hashlib.sha256(f"{slot}".encode()).digest()
+   624→    while len(out) < DIM:
+   625→        b = seed[(len(out) - DIM) % 32]
+   626→        out.append((b / 255.0) - 0.5)
+   627→    return out[:DIM]
+   628→
+   629→
+   630→def push_block(slot: int, feats: list[float], stats: dict) -> None:
+   631→    entity_id = f"solana:slot:{slot}"
+   632→    vector = vector_from_features(feats, slot)
+   633→    payload = {
+   634→        "vectors": [{
+   635→            "entity_id":   entity_id,
+   636→            "vector":      vector,
+   637→            "magnitude":   max(1.0, math.log10(stats["total_fee_lamports"] + 1)),
+   638→            "entropy":     stats["phi"],
+   639→            "block_num":   slot,
+   640→            "chain_id":    SOLANA_CHAIN_ID,
+   641→            "chain_label": SOLANA_LABEL,
+   642→            "vm_type":     "SVM",
+   643→        }],
+   644→        "block_num":      slot,
+   645→        "block_features": feats,
+   646→        "block_phi":      stats["phi"],
+   647→        "entity_id":      entity_id,
+   648→        "chain_id":       SOLANA_CHAIN_ID,
+   649→        "chain_label":    SOLANA_LABEL,
+   650→        "vm_type":        "SVM",
+   651→        "metadata": {
+   652→            "source":       "trion-svm",
+   653→            "tx_count":     stats["tx_count"],
+   654→            "successful":   stats["successful"],
+   655→            "failed":       stats["failed"],
+   656→            "total_fee":    stats["total_fee_lamports"],
+   657→            "programs":     stats["unique_programs"],
+   658→            "accounts":     stats["unique_accounts"],
+   659→        },
+   660→    }
+   661→    url = f"{FAISS_SERVICE_URL}/index/add_batch"
+   662→    # Circuit breaker: when FAISS has been failing, back off so we don't
+   663→    # pile more requests into its queue (which is the main cause of
+   664→    # cascading 15s timeouts). Returns True on success, False on failure.
+   665→    global _faiss_failures, _faiss_skip_until
+   666→    now_ts = time.monotonic()
+   667→    if now_ts < _faiss_skip_until:
+   668→        return False
+   669→    try:
+   670→        # Short timeout (4s) so a slow FAISS doesn't hold the indexer thread
+   671→        # for 15s per slot. If FAISS can't respond in 4s it's saturated and
+   672→        # retrying will only make it worse — let the circuit breaker kick in.
+   673→        r = session.post(url, data=json.dumps(payload), timeout=4)
+   674→        if r.status_code != 200:
+   675→            print(f"[svm][slot={slot}] FAISS POST {r.status_code}: {r.text[:200]}", file=sys.stderr)
+   676→            _faiss_failures += 1
+   677→        else:
+   678→            j = r.json()
+   679→            print(f"[svm][slot={slot}] txs={stats['tx_count']:>4} ok={stats['successful']:>4} "
+   680→                  f"fail={stats['failed']:>3} prog={stats['unique_programs']:>3} "
+   681→                  f"acct={stats['unique_accounts']:>4} Φ={stats['phi']:.4f} "
+   682→                  f"→ added={j.get('added',0)} idx_total={j.get('indexed_vectors','?')}")
+   683→            _faiss_failures = 0
+   684→            return True
+   685→    except requests.RequestException as e:
+   686→        print(f"[svm][slot={slot}] FAISS POST failed: {e}", file=sys.stderr)
+   687→        _faiss_failures += 1
+   688→    # On 3+ consecutive failures: open circuit for 30s, giving FAISS room
+   689→    # to drain its queue and serve oracle reads (mental/spiritual/etc).
+   690→    if _faiss_failures >= 3:
+   691→        _faiss_skip_until = time.monotonic() + 30.0
+   692→        print(f"[svm] FAISS circuit OPEN for 30s (consecutive failures={_faiss_failures})", file=sys.stderr)
+   693→        _faiss_failures = 0
+   694→    return False
+   695→
+   696→
+   697→# Circuit-breaker state — used by post_to_faiss above.
+   698→_faiss_failures: int = 0
+   699→_faiss_skip_until: float = 0.0
+   700→
+   701→
+   702→def main() -> int:
+   703→    print("===============================================================")
+   704→    print(" TRION L0-SVM: SOLANA BEHAVIORAL INDEXER")
+   705→    print("===============================================================")
+   706→    print(f" RPC          : {SOLANA_RPC_URL}")
+   707→    print(f" Chain id     : {SOLANA_CHAIN_ID}  ({SOLANA_LABEL})")
+   708→    print(f" FAISS target : {FAISS_SERVICE_URL}")
+   709→    print(f" Poll         : {POLL_SLEEP_MS}ms")
+   710→    print(" Streaming live Solana slots into FAISS. Press Ctrl+C to stop.")
+   711→    print()
+   712→
+   713→    # Public Solana RPCs typically only serve `getBlock` for slots that are
+   714→    # already FINALIZED. To stay reliably inside that window we keep our
+   715→    # cursor a fixed offset behind the finalized tip. SAFE_LAG = 40 slots
+   716→    # ≈ 16 s — well past the 32-block finality window.
+   717→    SAFE_LAG = 40
+   718→    last_slot = 0
+   719→    consecutive_failures = 0
+   720→
+   721→    while True:
+   722→        try:
+   723→            current = rpc("getSlot", [{"commitment": "finalized"}])
+   724→            if not isinstance(current, int):
+   725→                time.sleep(POLL_SLEEP_MS / 1000.0)
+   726→                continue
+   727→
+   728→            if last_slot == 0:
+   729→                last_slot = current - SAFE_LAG
+   730→
+   731→            # Stay at least SAFE_LAG behind the finalized tip
+   732→            tip = current - SAFE_LAG
+   733→            if tip <= last_slot:
+   734→                time.sleep(POLL_SLEEP_MS / 1000.0)
+   735→                continue
+   736→
+   737→            target = last_slot + 1
+   738→            try:
+   739→                block = rpc("getBlock", [target, {
+   740→                    "encoding": "json",
+   741→                    "transactionDetails": "full",
+   742→                    "maxSupportedTransactionVersion": 0,
+   743→                    "rewards": False,
+   744→                    "commitment": "finalized",
+   745→                }])
+   746→                consecutive_failures = 0
+   747→            except RuntimeError as e:
+   748→                msg = str(e)
+   749→                # Skipped slot (-32007 / -32009) — advance silently
+   750→                if "-32007" in msg or "-32009" in msg or "skipped" in msg.lower():
+   751→                    last_slot = target
+   752→                    continue
+   753→                # Slot data missing (-32004) — typically the public node hasn't
+   754→                # caught up. Skip ahead a bit and retry rather than spinning.
+   755→                if "-32004" in msg or "not available" in msg.lower() or "older than" in msg.lower():
+   756→                    consecutive_failures += 1
+   757→                    # Jump forward by min(consecutive_failures * 5, 100) slots,
+   758→                    # but never past the safe tip.
+   759→                    jump = min(consecutive_failures * 5, 100)
+   760→                    last_slot = min(last_slot + jump, tip)
+   761→                    if consecutive_failures % 20 == 1:
+   762→                        print(f"[svm] block missing for slot {target}, advancing +{jump} (cursor={last_slot}, tip={tip})", file=sys.stderr)
+   763→                    time.sleep(0.3)
+   764→                    continue
+   765→                raise
+   766→
+   767→            if not block:
+   768→                last_slot = target
+   769→                continue
+   770→
+   771→            feats, stats = features_from_block(block)
+   772→            push_block(target, feats, stats)
+   773→            last_slot = target
+   774→            consecutive_failures = 0
+   775→
+   776→        except KeyboardInterrupt:
+   777→            print("\n[svm] shutdown requested")
+   778→            return 0
+   779→        except requests.HTTPError as e:
+   780→            # 429 = rate limited. Public Solana RPCs throttle aggressively;
+   781→            # back off for a longer window and resume from current confirmed slot.
+   782→            status = getattr(e.response, "status_code", None)
+   783→            if status == 429:
+   784→                print(f"[svm] rate-limited (429), sleeping 15s", file=sys.stderr)
+   785→                time.sleep(15.0)
+   786→                last_slot = 0   # re-bootstrap from current confirmed slot
+   787→            else:
+   788→                print(f"[svm] HTTP {status}: {e}", file=sys.stderr)
+   789→                time.sleep(3.0)
+   790→        except Exception as e:
+   791→            msg = str(e)
+   792→            if "429" in msg or "Too Many Requests" in msg:
+   793→                print(f"[svm] rate-limited (429), sleeping 15s", file=sys.stderr)
+   794→                time.sleep(15.0)
+   795→                last_slot = 0
+   796→            else:
+   797→                print(f"[svm] loop error: {e}", file=sys.stderr)
+   798→                time.sleep(2.0)
+   799→
+   800→
+   801→if __name__ == "__main__":
+   802→    sys.exit(main())
+   803→
+   804→=== END chains/svm/svm_indexer.py ===
+   805→
+   806→=== chains/svm/package.json ===
+   807→{
+   808→  "name": "@workspace/trion-svm",
+   809→  "version": "1.0.0",
+   810→  "description": "TRION SVM — Solana behavioral indexer + oracle client",
+   811→  "type": "module",
+   812→  "scripts": {
+   813→    "indexer": "tsx indexer.ts",
+   814→    "client": "tsx client.ts",
+   815→    "dev": "tsx --watch indexer.ts",
+   816→    "build:program": "cd program && cargo build-sbf 2>&1",
+   817→    "check:program": "cd program && cargo check 2>&1",
+   818→    "test:program": "cd program && cargo test 2>&1"
+   819→  },
+   820→  "dependencies": {
+   821→    "@coral-xyz/anchor": "^0.31.1",
+   822→    "@solana/web3.js": "^1.98.4",
+   823→    "bs58": "^6.0.0",
+   824→    "node-fetch": "^3.3.2"
+   825→  },
+   826→  "devDependencies": {
+   827→    "@types/node": "^20.12.7",
+   828→    "tsx": "^4.11.0",
+   829→    "typescript": "^5.4.5"
+   830→  }
+   831→}
+   832→
+   833→=== END chains/svm/package.json ===
+   834→
+   835→=== chains/svm/tsconfig.json ===
+   836→{
+   837→  "compilerOptions": {
+   838→    "target": "ES2022",
+   839→    "module": "ES2022",
+   840→    "moduleResolution": "bundler",
+   841→    "strict": true,
+   842→    "esModuleInterop": true,
+   843→    "outDir": "dist",
+   844→    "rootDir": ".",
+   845→    "skipLibCheck": true
+   846→  },
+   847→  "include": ["*.ts"],
+   848→  "exclude": ["dist", "node_modules", "program"]
+   849→}
+   850→
+   851→=== END chains/svm/tsconfig.json ===
+   852→
+   853→=== chains/ton/contracts/gate.fc ===
+   854→;; gate.fc — TRION TON Execution Gate (TVM / FunC)
+   855→;;
+   856→;; Mirrors TRIONExecutionGate.sol on TON.
+   857→;; Behavioral firewall: gate_check passes when phi >= threshold.
+   858→;;
+   859→;; Storage layout:
+   860→;;   owner_addr (267 bits)
+   861→;;   gates_dict (dict, key=256-bit gate_id, value=gate cell ref)
+   862→;;
+   863→;; Gate cell:
+   864→;;   custom_threshold [64 bits] (0 = use route threshold)
+   865→;;   check_count      [64 bits]
+   866→;;   pass_count       [64 bits]
+   867→;;   block_count      [64 bits]
+   868→;;   last_phi         [64 bits]
+   869→;;
+   870→;; Op codes:
+   871→;;   0x01  set_gate_threshold
+   872→;;   0x02  gate_check  (owner/validator)
+   873→;;   0x10  transfer_ownership
+   874→
+   875→#include "stdlib.fc";
+   876→
+   877→const int ERR_UNAUTHORIZED  = 100;
+   878→const int ERR_INVALID_SCORE = 101;
+   879→const int ERR_GATE_BLOCKED  = 120;
+   880→const int ERR_GATE_NOT_FOUND = 121;
+   881→
+   882→
+   883→;; ── Storage ───────────────────────────────────────────────────────────────────
+   884→
+   885→(slice, cell) load_storage() inline {
+   886→    slice ds = get_data().begin_parse();
+   887→    slice owner_addr = ds~load_bits(267);
+   888→    cell gates_dict  = ds~load_ref();
+   889→    return (owner_addr, gates_dict);
+   890→}
+   891→
+   892→() save_storage(slice owner_addr, cell gates_dict) impure inline {
+   893→    set_data(begin_cell()
+   894→        .store_slice(owner_addr)
+   895→        .store_ref(gates_dict)
+   896→    .end_cell());
+   897→}
+   898→
+   899→cell pack_gate(int threshold, int checks, int passes, int blocks, int phi) inline {
+   900→    return begin_cell()
+   901→        .store_uint(threshold, 64)
+   902→        .store_uint(checks,    64)
+   903→        .store_uint(passes,    64)
+   904→        .store_uint(blocks,    64)
+   905→        .store_uint(phi,       64)
+   906→    .end_cell();
+   907→}
+   908→
+   909→(int, int, int, int, int) unpack_gate(cell c) inline {
+   910→    slice s = c.begin_parse();
+   911→    int threshold = s~load_uint(64);
+   912→    int checks    = s~load_uint(64);
+   913→    int passes    = s~load_uint(64);
+   914→    int blocks    = s~load_uint(64);
+   915→    int phi       = s~load_uint(64);
+   916→    return (threshold, checks, passes, blocks, phi);
+   917→}
+   918→
+   919→;; ── recv_internal ─────────────────────────────────────────────────────────────
+   920→
+   921→() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+   922→    if (in_msg_body.slice_empty?()) { return (); }
+   923→
+   924→    slice cs = in_msg_full.begin_parse();
+   925→    cs~load_uint(4);
+   926→    slice sender_addr = cs~load_bits(267);
+   927→
+   928→    int op = in_msg_body~load_uint(32);
+   929→
+   930→    ;; ── 0x01 set_gate_threshold ──────────────────────────────────────────────
+   931→    if (op == 1) {
+   932→        (slice owner_addr, cell gates_dict) = load_storage();
+   933→        throw_unless(ERR_UNAUTHORIZED, equal_slices(sender_addr, owner_addr));
+   934→
+   935→        int gate_id   = in_msg_body~load_uint(256);
+   936→        int threshold = in_msg_body~load_uint(64);
+   937→        throw_if(ERR_INVALID_SCORE, threshold > 1000000);
+   938→
+   939→        slice gkey = begin_cell().store_uint(gate_id, 256).end_cell().begin_parse();
+   940→        (slice existing, int found) = gates_dict.dict_get?(256, gkey);
+   941→
+   942→        int checks = 0; int passes = 0; int blocks = 0; int phi = 0;
+   943→        if (found) {
+   944→            cell gc = existing~load_ref();
+   945→            (_, checks, passes, blocks, phi) = unpack_gate(gc);
+   946→        }
+   947→
+   948→        cell new_gc = pack_gate(threshold, checks, passes, blocks, phi);
+   949→        gates_dict~dict_set(256, gkey, new_gc.begin_parse());
+   950→        save_storage(owner_addr, gates_dict);
+   951→        return ();
+   952→    }
+   953→
+   954→    ;; ── 0x02 gate_check ──────────────────────────────────────────────────────
+   955→    if (op == 2) {
+   956→        (slice owner_addr, cell gates_dict) = load_storage();
+   957→
+   958→        int gate_id        = in_msg_body~load_uint(256);
+   959→        int phi            = in_msg_body~load_uint(64);
+   960→        int route_threshold = in_msg_body~load_uint(64);
+   961→
+   962→        slice gkey = begin_cell().store_uint(gate_id, 256).end_cell().begin_parse();
+   963→        (slice existing, int found) = gates_dict.dict_get?(256, gkey);
+   964→
+   965→        int threshold = route_threshold;
+   966→        int checks = 0; int passes = 0; int blocks = 0;
+   967→
+   968→        if (found) {
+   969→            cell gc = existing~load_ref();
+   970→            (int ct, int ch, int pa, int bl, _) = unpack_gate(gc);
+   971→            if (ct > 0) { threshold = ct; }
+   972→            checks = ch; passes = pa; blocks = bl;
+   973→        }
+   974→
+   975→        checks = checks + 1;
+   976→        int passed = (phi >= threshold) ? 1 : 0;
+   977→        if (passed) { passes = passes + 1; }
+   978→        else { blocks = blocks + 1; }
+   979→
+   980→        cell new_gc = pack_gate(threshold, checks, passes, blocks, phi);
+   981→        gates_dict~dict_set(256, gkey, new_gc.begin_parse());
+   982→        save_storage(owner_addr, gates_dict);
+   983→
+   984→        throw_unless(ERR_GATE_BLOCKED, passed);
+   985→        return ();
+   986→    }
+   987→
+   988→    ;; ── 0x10 transfer_ownership ──────────────────────────────────────────────
+   989→    if (op == 16) {
+   990→        (slice owner_addr, cell gates_dict) = load_storage();
+   991→        throw_unless(ERR_UNAUTHORIZED, equal_slices(sender_addr, owner_addr));
+   992→        slice new_owner = in_msg_body~load_bits(267);
+   993→        save_storage(new_owner, gates_dict);
+   994→        return ();
+   995→    }
+   996→}
+   997→
+   998→;; ── get_methods ───────────────────────────────────────────────────────────────
+   999→
+  1000→(int, int, int, int) get_gate_stats(int gate_id) method_id {
+  1001→    (_, cell gates_dict) = load_storage();
+  1002→    slice gkey = begin_cell().store_uint(gate_id, 256).end_cell().begin_parse();
+  1003→    (slice existing, int found) = gates_dict.dict_get?(256, gkey);
+  1004→    throw_unless(ERR_GATE_NOT_FOUND, found);
+  1005→    cell gc = existing~load_ref();
+  1006→    (int threshold, int checks, int passes, int blocks, int phi) = unpack_gate(gc);
+  1007→    return (threshold, checks, passes, blocks);
+  1008→}
+  1009→
+  1010→=== END chains/ton/contracts/gate.fc ===
+  1011→
+  1012→=== chains/ton/contracts/intent.fc ===
+  1013→;; intent.fc — TRION TON Intent Registry (TVM / FunC)
+  1014→;;
+  1015→;; Mirrors BTCPIntent.sol on TON.
+  1016→;; Intent actions: 0=SWAP 1=TRANSFER 2=LIQUIDITY 3=STAKE 4=BORROW
+  1017→;; Intent statuses: 0=PENDING 1=ROUTING 2=EXECUTING 3=COMPLETED 4=FAILED 5=EXPIRED 6=RESURRECTED
+  1018→;;
+  1019→;; Storage layout:
+  1020→;;   owner_addr  (267 bits)
+  1021→;;   intent_count (64 bits)
+  1022→;;   intents_dict (dict, key=256-bit intent_hash, value=intent cell ref)
+  1023→;;
+  1024→;; Intent cell layout:
+  1025→;;   intent_hash  [256 bits]
+  1026→;;   entity_id    [256 bits]
+  1027→;;   action       [8 bits]
+  1028→;;   asset_in     [256 bits]
+  1029→;;   asset_out    [256 bits]
+  1030→;;   magnitude    [64 bits]
+  1031→;;   source_chain [64 bits]
+  1032→;;   deadline     [64 bits]
+  1033→;;   status       [8 bits]
+  1034→;;   created_at   [64 bits]
+  1035→;;
+  1036→;; Op codes:
+  1037→;;   0x01  register_intent
+  1038→;;   0x02  update_intent_status
+  1039→;;   0x03  get_intent (get method preferred)
+  1040→
+  1041→#include "stdlib.fc";
+  1042→
+  1043→const int ERR_UNAUTHORIZED           = 100;
+  1044→const int ERR_INTENT_EXISTS          = 110;
+  1045→const int ERR_INTENT_NOT_FOUND       = 111;
+  1046→const int ERR_INVALID_ACTION         = 112;
+  1047→const int ERR_ZERO_MAGNITUDE         = 113;
+  1048→const int ERR_INVALID_TRANSITION     = 114;
+  1049→
+  1050→
+  1051→;; ── Storage ───────────────────────────────────────────────────────────────────
+  1052→
+  1053→(slice, int, cell) load_storage() inline {
+  1054→    slice ds = get_data().begin_parse();
+  1055→    slice owner_addr  = ds~load_bits(267);
+  1056→    int intent_count  = ds~load_uint(64);
+  1057→    cell intents_dict = ds~load_ref();
+  1058→    return (owner_addr, intent_count, intents_dict);
+  1059→}
+  1060→
+  1061→() save_storage(slice owner_addr, int intent_count, cell intents_dict) impure inline {
+  1062→    set_data(begin_cell()
+  1063→        .store_slice(owner_addr)
+  1064→        .store_uint(intent_count, 64)
+  1065→        .store_ref(intents_dict)
+  1066→    .end_cell());
+  1067→}
+  1068→
+  1069→;; ── Intent packing ────────────────────────────────────────────────────────────
+  1070→
+  1071→cell pack_intent(int hash, int entity, int action, int ain, int aout, int mag, int chain, int dl, int status, int ts) inline {
+  1072→    return begin_cell()
+  1073→        .store_uint(hash,   256).store_uint(entity,  256)
+  1074→        .store_uint(action,  8) .store_uint(ain,     256)
+  1075→        .store_uint(aout,   256).store_uint(mag,      64)
+  1076→        .store_uint(chain,   64).store_uint(dl,        64)
+  1077→        .store_uint(status,   8).store_uint(ts,        64)
+  1078→    .end_cell();
+  1079→}
+  1080→
+  1081→;; ── Status transition validator ───────────────────────────────────────────────
+  1082→
+  1083→int valid_transition(int from, int to) inline {
+  1084→    ;; PENDING→ROUTING|FAILED|EXPIRED  ROUTING→EXECUTING|FAILED|EXPIRED
+  1085→    ;; EXECUTING→COMPLETED|FAILED  FAILED→RESURRECTED
+  1086→    if ((from == 0) & ((to == 1) | (to == 4) | (to == 5))) { return 1; }
+  1087→    if ((from == 1) & ((to == 2) | (to == 4) | (to == 5))) { return 1; }
+  1088→    if ((from == 2) & ((to == 3) | (to == 4)))              { return 1; }
+  1089→    if ((from == 4) & (to == 6))                            { return 1; }
+  1090→    return 0;
+  1091→}
+  1092→
+  1093→;; ── recv_internal ─────────────────────────────────────────────────────────────
+  1094→
+  1095→() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+  1096→    if (in_msg_body.slice_empty?()) { return (); }
+  1097→
+  1098→    slice cs = in_msg_full.begin_parse();
+  1099→    cs~load_uint(4);
+  1100→    slice sender_addr = cs~load_bits(267);
+  1101→
+  1102→    int op = in_msg_body~load_uint(32);
+  1103→
+  1104→    ;; ── 0x01 register_intent ─────────────────────────────────────────────────
+  1105→    if (op == 1) {
+  1106→        (slice owner_addr, int intent_count, cell intents_dict) = load_storage();
+  1107→
+  1108→        int hash   = in_msg_body~load_uint(256);
+  1109→        int entity = in_msg_body~load_uint(256);
+  1110→        int action = in_msg_body~load_uint(8);
+  1111→        int ain    = in_msg_body~load_uint(256);
+  1112→        int aout   = in_msg_body~load_uint(256);
+  1113→        int mag    = in_msg_body~load_uint(64);
+  1114→        int chain  = in_msg_body~load_uint(64);
+  1115→        int dl     = in_msg_body~load_uint(64);
+  1116→
+  1117→        throw_if(ERR_INVALID_ACTION, action > 4);
+  1118→        throw_if(ERR_ZERO_MAGNITUDE, mag == 0);
+  1119→
+  1120→        slice key = begin_cell().store_uint(hash, 256).end_cell().begin_parse();
+  1121→        (_, int found) = intents_dict.dict_get?(256, key);
+  1122→        throw_if(ERR_INTENT_EXISTS, found);
+  1123→
+  1124→        int ts = now();
+  1125→        cell ic = pack_intent(hash, entity, action, ain, aout, mag, chain, dl, 0, ts);
+  1126→        slice val = ic.begin_parse();
+  1127→        intents_dict~dict_set(256, key, val);
+  1128→        save_storage(owner_addr, intent_count + 1, intents_dict);
+  1129→        return ();
+  1130→    }
+  1131→
+  1132→    ;; ── 0x02 update_intent_status ────────────────────────────────────────────
+  1133→    if (op == 2) {
+  1134→        (slice owner_addr, int intent_count, cell intents_dict) = load_storage();
+  1135→        throw_unless(ERR_UNAUTHORIZED, equal_slices(sender_addr, owner_addr));
+  1136→
+  1137→        int hash       = in_msg_body~load_uint(256);
+  1138→        int new_status = in_msg_body~load_uint(8);
+  1139→
+  1140→        slice key = begin_cell().store_uint(hash, 256).end_cell().begin_parse();
+  1141→        (slice rec_slice, int found) = intents_dict.dict_get?(256, key);
+  1142→        throw_unless(ERR_INTENT_NOT_FOUND, found);
+  1143→
+  1144→        ;; read current status from the cell
+  1145→        cell rec_cell = rec_slice~load_ref();
+  1146→        slice rs = rec_cell.begin_parse();
+  1147→        rs~skip_bits(256 + 256 + 8 + 256 + 256 + 64 + 64 + 64); ;; skip to status
+  1148→        int cur_status = rs~load_uint(8);
+  1149→
+  1150→        throw_unless(ERR_INVALID_TRANSITION, valid_transition(cur_status, new_status));
+  1151→
+  1152→        ;; re-read full record to rebuild
+  1153→        slice rs2 = rec_cell.begin_parse();
+  1154→        int h  = rs2~load_uint(256); int e  = rs2~load_uint(256);
+  1155→        int a  = rs2~load_uint(8);   int ai = rs2~load_uint(256);
+  1156→        int ao = rs2~load_uint(256); int m  = rs2~load_uint(64);
+  1157→        int sc = rs2~load_uint(64);  int d  = rs2~load_uint(64);
+  1158→        rs2~load_uint(8); ;; old status
+  1159→        int ts = rs2~load_uint(64);
+  1160→
+  1161→        cell new_cell = pack_intent(h, e, a, ai, ao, m, sc, d, new_status, ts);
+  1162→        slice new_val = new_cell.begin_parse();
+  1163→        intents_dict~dict_set(256, key, new_val);
+  1164→        save_storage(owner_addr, intent_count, intents_dict);
+  1165→        return ();
+  1166→    }
+  1167→}
+  1168→
+  1169→;; ── get_methods ───────────────────────────────────────────────────────────────
+  1170→
+  1171→(int, int, int) get_intent(int hash) method_id {
+  1172→    (_, _, cell intents_dict) = load_storage();
+  1173→    slice key = begin_cell().store_uint(hash, 256).end_cell().begin_parse();
+  1174→    (slice rec_slice, int found) = intents_dict.dict_get?(256, key);
+  1175→    throw_unless(ERR_INTENT_NOT_FOUND, found);
+  1176→    cell rc = rec_slice~load_ref();
+  1177→    slice s = rc.begin_parse();
+  1178→    s~skip_bits(256 + 256);  int action = s~load_uint(8);
+  1179→    s~skip_bits(256 + 256);  int mag    = s~load_uint(64);
+  1180→    s~skip_bits(64 + 64);    int status = s~load_uint(8);
+  1181→    return (action, mag, status);
+  1182→}
+  1183→
+  1184→int get_intent_count() method_id {
+  1185→    (_, int c, _) = load_storage();
+  1186→    return c;
+  1187→}
+  1188→
+  1189→=== END chains/ton/contracts/intent.fc ===
+  1190→
+  1191→=== chains/ton/contracts/liquidity.fc ===
+  1192→;; liquidity.fc — TRION TON Liquidity Commitment (TVM / FunC)
+  1193→;;
+  1194→;; Mirrors LiquidityOcean.sol + BTCP_ESCROW.vy on TON.
+  1195→;; Commitment statuses: 0=PENDING 1=SETTLED 2=REVERTED
+  1196→;; Revert reasons: 0=TIMEOUT 1=COHERENCE_FAILURE 2=ROUTE_INVALID 3=MANUAL
+  1197→;;
+  1198→;; Storage layout:
+  1199→;;   owner_addr       (267 bits)
+  1200→;;   commitment_count (64 bits)
+  1201→;;   commitments_dict (dict, key=256-bit commitment_id, value=commitment cell ref)
+  1202→;;
+  1203→;; Commitment cell:
+  1204→;;   entity_id    [256 bits]
+  1205→;;   route_id     [256 bits]
+  1206→;;   asset        [256 bits]
+  1207→;;   amount       [64 bits]
+  1208→;;   min_coherence[64 bits]
+  1209→;;   expiry       [64 bits]
+  1210→;;   status       [8 bits]
+  1211→;;   created_at   [64 bits]
+  1212→;;   execution_bh [256 bits]
+  1213→;;   settled_at   [64 bits]
+  1214→;;   revert_at    [64 bits]
+  1215→;;   revert_code  [8 bits]
+  1216→;;
+  1217→;; Op codes:
+  1218→;;   0x01  commit_liquidity
+  1219→;;   0x02  settle_commitment   (owner only)
+  1220→;;   0x03  revert_commitment   (owner only)
+  1221→;;   0x10  transfer_ownership
+  1222→
+  1223→#include "stdlib.fc";
+  1224→
+  1225→const int ERR_UNAUTHORIZED       = 100;
+  1226→const int ERR_INVALID_SCORE      = 101;
+  1227→const int ERR_COMMITMENT_EXISTS  = 130;
+  1228→const int ERR_COMMITMENT_MISSING = 131;
+  1229→const int ERR_ALREADY_FINAL      = 132;
+  1230→const int ERR_EXPIRED            = 133;
+  1231→const int ERR_COHERENCE_LOW      = 134;
+  1232→
+  1233→
+  1234→;; ── Storage ───────────────────────────────────────────────────────────────────
+  1235→
+  1236→(slice, int, cell) load_storage() inline {
+  1237→    slice ds = get_data().begin_parse();
+  1238→    slice owner_addr      = ds~load_bits(267);
+  1239→    int commitment_count  = ds~load_uint(64);
+  1240→    cell commitments_dict = ds~load_ref();
+  1241→    return (owner_addr, commitment_count, commitments_dict);
+  1242→}
+  1243→
+  1244→() save_storage(slice owner_addr, int commitment_count, cell commitments_dict) impure inline {
+  1245→    set_data(begin_cell()
+  1246→        .store_slice(owner_addr)
+  1247→        .store_uint(commitment_count, 64)
+  1248→        .store_ref(commitments_dict)
+  1249→    .end_cell());
+  1250→}
+  1251→
+  1252→cell pack_commitment(
+  1253→    int entity, int route, int asset, int amount, int min_coh, int expiry,
+  1254→    int status, int ts, int exec_bh, int settled_at, int revert_at, int revert_code
+  1255→) inline {
+  1256→    return begin_cell()
+  1257→        .store_uint(entity,       256)
+  1258→        .store_uint(route,        256)
+  1259→        .store_uint(asset,        256)
+  1260→        .store_uint(amount,        64)
+  1261→        .store_uint(min_coh,       64)
+  1262→        .store_uint(expiry,        64)
+  1263→        .store_uint(status,         8)
+  1264→        .store_uint(ts,            64)
+  1265→        .store_uint(exec_bh,      256)
+  1266→        .store_uint(settled_at,    64)
+  1267→        .store_uint(revert_at,     64)
+  1268→        .store_uint(revert_code,    8)
+  1269→    .end_cell();
+  1270→}
+  1271→
+  1272→;; ── recv_internal ─────────────────────────────────────────────────────────────
+  1273→
+  1274→() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+  1275→    if (in_msg_body.slice_empty?()) { return (); }
+  1276→
+  1277→    slice cs = in_msg_full.begin_parse();
+  1278→    cs~load_uint(4);
+  1279→    slice sender_addr = cs~load_bits(267);
+  1280→
+  1281→    int op = in_msg_body~load_uint(32);
+  1282→
+  1283→    ;; ── 0x01 commit_liquidity ────────────────────────────────────────────────
+  1284→    if (op == 1) {
+  1285→        (slice owner_addr, int ccount, cell cdict) = load_storage();
+  1286→
+  1287→        int cid       = in_msg_body~load_uint(256);
+  1288→        int entity    = in_msg_body~load_uint(256);
+  1289→        int route     = in_msg_body~load_uint(256);
+  1290→        int asset     = in_msg_body~load_uint(256);
+  1291→        int amount    = in_msg_body~load_uint(64);
+  1292→        int min_coh   = in_msg_body~load_uint(64);
+  1293→        int expiry    = in_msg_body~load_uint(64);
+  1294→
+  1295→        throw_if(ERR_INVALID_SCORE, min_coh > 1000000);
+  1296→
+  1297→        slice ckey = begin_cell().store_uint(cid, 256).end_cell().begin_parse();
+  1298→        (_, int found) = cdict.dict_get?(256, ckey);
+  1299→        throw_if(ERR_COMMITMENT_EXISTS, found);
+  1300→
+  1301→        int ts = now();
+  1302→        throw_if(ERR_EXPIRED, expiry <= ts);
+  1303→
+  1304→        cell cc = pack_commitment(entity, route, asset, amount, min_coh, expiry, 0, ts, 0, 0, 0, 0);
+  1305→        cdict~dict_set(256, ckey, cc.begin_parse());
+  1306→        save_storage(owner_addr, ccount + 1, cdict);
+  1307→        return ();
+  1308→    }
+  1309→
+  1310→    ;; ── 0x02 settle_commitment ───────────────────────────────────────────────
+  1311→    if (op == 2) {
+  1312→        (slice owner_addr, int ccount, cell cdict) = load_storage();
+  1313→        throw_unless(ERR_UNAUTHORIZED, equal_slices(sender_addr, owner_addr));
+  1314→
+  1315→        int cid      = in_msg_body~load_uint(256);
+  1316→        int exec_bh  = in_msg_body~load_uint(256);
+  1317→        int coherence = in_msg_body~load_uint(64);
+  1318→
+  1319→        slice ckey = begin_cell().store_uint(cid, 256).end_cell().begin_parse();
+  1320→        (slice cv, int found) = cdict.dict_get?(256, ckey);
+  1321→        throw_unless(ERR_COMMITMENT_MISSING, found);
+  1322→
+  1323→        cell cc = cv~load_ref();
+  1324→        slice s = cc.begin_parse();
+  1325→        int entity  = s~load_uint(256);
+  1326→        int route   = s~load_uint(256);
+  1327→        int asset   = s~load_uint(256);
+  1328→        int amount  = s~load_uint(64);
+  1329→        int min_coh = s~load_uint(64);
+  1330→        int expiry  = s~load_uint(64);
+  1331→        int status  = s~load_uint(8);
+  1332→        int ts      = s~load_uint(64);
+  1333→
+  1334→        throw_if(ERR_ALREADY_FINAL, status != 0);
+  1335→        throw_if(ERR_EXPIRED, now() > expiry);
+  1336→        throw_if(ERR_COHERENCE_LOW, coherence < min_coh);
+  1337→
+  1338→        cell new_cc = pack_commitment(entity, route, asset, amount, min_coh, expiry, 1, ts, exec_bh, now(), 0, 0);
+  1339→        cdict~dict_set(256, ckey, new_cc.begin_parse());
+  1340→        save_storage(owner_addr, ccount, cdict);
+  1341→        return ();
+  1342→    }
+  1343→
+  1344→    ;; ── 0x03 revert_commitment ───────────────────────────────────────────────
+  1345→    if (op == 3) {
+  1346→        (slice owner_addr, int ccount, cell cdict) = load_storage();
+  1347→        throw_unless(ERR_UNAUTHORIZED, equal_slices(sender_addr, owner_addr));
+  1348→
+  1349→        int cid    = in_msg_body~load_uint(256);
+  1350→        int reason = in_msg_body~load_uint(8);
+  1351→
+  1352→        slice ckey = begin_cell().store_uint(cid, 256).end_cell().begin_parse();
+  1353→        (slice cv, int found) = cdict.dict_get?(256, ckey);
+  1354→        throw_unless(ERR_COMMITMENT_MISSING, found);
+  1355→
+  1356→        cell cc = cv~load_ref();
+  1357→        slice s = cc.begin_parse();
+  1358→        int entity  = s~load_uint(256);
+  1359→        int route   = s~load_uint(256);
+  1360→        int asset   = s~load_uint(256);
+  1361→        int amount  = s~load_uint(64);
+  1362→        int min_coh = s~load_uint(64);
+  1363→        int expiry  = s~load_uint(64);
+  1364→        int status  = s~load_uint(8);
+  1365→        int ts      = s~load_uint(64);
+  1366→
+  1367→        throw_if(ERR_ALREADY_FINAL, status != 0);
+  1368→
+  1369→        cell new_cc = pack_commitment(entity, route, asset, amount, min_coh, expiry, 2, ts, 0, 0, now(), reason);
+  1370→        cdict~dict_set(256, ckey, new_cc.begin_parse());
+  1371→        save_storage(owner_addr, ccount, cdict);
+  1372→        return ();
+  1373→    }
+  1374→
+  1375→    ;; ── 0x10 transfer_ownership ──────────────────────────────────────────────
+  1376→    if (op == 16) {
+  1377→        (slice owner_addr, int ccount, cell cdict) = load_storage();
+  1378→        throw_unless(ERR_UNAUTHORIZED, equal_slices(sender_addr, owner_addr));
+  1379→        slice new_owner = in_msg_body~load_bits(267);
+  1380→        save_storage(new_owner, ccount, cdict);
+  1381→        return ();
+  1382→    }
+  1383→}
+  1384→
+  1385→;; ── get_methods ───────────────────────────────────────────────────────────────
+  1386→
+  1387→(int, int, int) get_commitment(int cid) method_id {
+  1388→    (_, _, cell cdict) = load_storage();
+  1389→    slice ckey = begin_cell().store_uint(cid, 256).end_cell().begin_parse();
+  1390→    (slice cv, int found) = cdict.dict_get?(256, ckey);
+  1391→    throw_unless(ERR_COMMITMENT_MISSING, found);
+  1392→    cell cc = cv~load_ref();
+  1393→    slice s = cc.begin_parse();
+  1394→    s~skip_bits(256 + 256 + 256); ;; entity, route, asset
+  1395→    int amount  = s~load_uint(64);
+  1396→    int min_coh = s~load_uint(64);
+  1397→    s~skip_bits(64);              ;; expiry
+  1398→    int status  = s~load_uint(8);
+  1399→    return (amount, min_coh, status);
+  1400→}
+  1401→
+  1402→int get_commitment_count() method_id {
+  1403→    (_, int c, _) = load_storage();
+  1404→    return c;
+  1405→}
+  1406→
+  1407→=== END chains/ton/contracts/liquidity.fc ===
+  1408→
+  1409→=== chains/ton/contracts/oracle.fc ===
+  1410→;; oracle.fc — TRION TON Oracle (TVM / FunC)
+  1411→;;
+  1412→;; Equivalent to TRIONOracleV3.sol on TON.
+  1413→;; Provides publish_btcp_route + verify_execution for cross-VM consensus.
+  1414→;;
+  1415→;; Storage layout (cell):
+  1416→;;   owner_addr  (267 bits, MsgAddressInt)
+  1417→;;   route_count (64 bits)
+  1418→;;   version     (8 bits)
+  1419→;;   routes_dict (dict, key = 256-bit route_id, value = route cell)
+  1420→;;
+  1421→;; Route cell layout:
+  1422→;;   route_id        [256 bits]
+  1423→;;   anchor_bh       [256 bits]
+  1424→;;   execution_bh    [256 bits]
+  1425→;;   coherence_score [64 bits]  (×1_000_000)
+  1426→;;   threshold_score [64 bits]
+  1427→;;   published_at    [64 bits]  (unix timestamp)
+  1428→;;   is_active       [1 bit]
+  1429→;;
+  1430→;; Op codes:
+  1431→;;   0x01  publish_btcp_route
+  1432→;;   0x02  verify_execution
+  1433→;;   0x03  add_validator
+  1434→;;   0x10  transfer_ownership
+  1435→
+  1436→#include "stdlib.fc";
+  1437→
+  1438→;; ── Error codes ───────────────────────────────────────────────────────────────
+  1439→const int ERR_UNAUTHORIZED    = 100;
+  1440→const int ERR_INVALID_SCORE   = 101;
+  1441→const int ERR_ROUTE_NOT_FOUND = 102;
+  1442→const int ERR_ROUTE_INACTIVE  = 103;
+  1443→
+  1444→;; ── Storage helpers ───────────────────────────────────────────────────────────
+  1445→
+  1446→(slice, int, int, cell) load_storage() inline {
+  1447→    slice ds = get_data().begin_parse();
+  1448→    slice owner_addr  = ds~load_bits(267);
+  1449→    int route_count   = ds~load_uint(64);
+  1450→    int version       = ds~load_uint(8);
+  1451→    cell routes_dict  = ds~load_ref();
+  1452→    return (owner_addr, route_count, version, routes_dict);
+  1453→}
+  1454→
+  1455→() save_storage(slice owner_addr, int route_count, int version, cell routes_dict) impure inline {
+  1456→    set_data(begin_cell()
+  1457→        .store_slice(owner_addr)
+  1458→        .store_uint(route_count, 64)
+  1459→        .store_uint(version, 8)
+  1460→        .store_ref(routes_dict)
+  1461→    .end_cell());
+  1462→}
+  1463→
+  1464→;; ── Route serialisation ───────────────────────────────────────────────────────
+  1465→
+  1466→cell pack_route(int route_id, int anchor_bh, int exec_bh, int coherence, int threshold, int ts, int active) inline {
+  1467→    return begin_cell()
+  1468→        .store_uint(route_id,  256)
+  1469→        .store_uint(anchor_bh, 256)
+  1470→        .store_uint(exec_bh,   256)
+  1471→        .store_uint(coherence, 64)
+  1472→        .store_uint(threshold, 64)
+  1473→        .store_uint(ts,        64)
+  1474→        .store_uint(active,    1)
+  1475→    .end_cell();
+  1476→}
+  1477→
+  1478→(int, int, int, int, int, int, int) unpack_route(cell c) inline {
+  1479→    slice s = c.begin_parse();
+  1480→    int route_id  = s~load_uint(256);
+  1481→    int anchor_bh = s~load_uint(256);
+  1482→    int exec_bh   = s~load_uint(256);
+  1483→    int coherence = s~load_uint(64);
+  1484→    int threshold = s~load_uint(64);
+  1485→    int ts        = s~load_uint(64);
+  1486→    int active    = s~load_uint(1);
+  1487→    return (route_id, anchor_bh, exec_bh, coherence, threshold, ts, active);
+  1488→}
+  1489→
+  1490→;; ── Auth helper ───────────────────────────────────────────────────────────────
+  1491→
+  1492→() assert_owner(slice sender_addr) impure inline {
+  1493→    (slice owner_addr, _, _, _) = load_storage();
+  1494→    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender_addr, owner_addr));
+  1495→}
+  1496→
+  1497→
+  1498→;; ── recv_internal ─────────────────────────────────────────────────────────────
+  1499→
+  1500→() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+  1501→    if (in_msg_body.slice_empty?()) { return (); }
+  1502→
+  1503→    slice cs = in_msg_full.begin_parse();
+  1504→    cs~load_uint(4);              ;; flags
+  1505→    slice sender_addr = cs~load_bits(267);
+  1506→
+  1507→    int op = in_msg_body~load_uint(32);
+  1508→
+  1509→    ;; ── 0x01 publish_btcp_route ───────────────────────────────────────────────
+  1510→    if (op == 1) {
+  1511→        (slice owner_addr, int route_count, int version, cell routes_dict) = load_storage();
+  1512→        throw_unless(ERR_UNAUTHORIZED, equal_slices(sender_addr, owner_addr));
+  1513→
+  1514→        int route_id  = in_msg_body~load_uint(256);
+  1515→        int anchor_bh = in_msg_body~load_uint(256);
+  1516→        int exec_bh   = in_msg_body~load_uint(256);
+  1517→        int coherence = in_msg_body~load_uint(64);
+  1518→        int threshold = in_msg_body~load_uint(64);
+  1519→
+  1520→        throw_if(ERR_INVALID_SCORE, coherence > 1000000);
+  1521→        throw_if(ERR_INVALID_SCORE, threshold > 1000000);
+  1522→
+  1523→        int ts = now();
+  1524→        cell route_cell = pack_route(route_id, anchor_bh, exec_bh, coherence, threshold, ts, 1);
+  1525→
+  1526→        ;; store route in dict keyed by route_id (256-bit)
+  1527→        slice key = begin_cell().store_uint(route_id, 256).end_cell().begin_parse();
+  1528→        slice val = route_cell.begin_parse();
+  1529→        routes_dict~dict_set(256, key, val);
+  1530→
+  1531→        save_storage(owner_addr, route_count + 1, version, routes_dict);
+  1532→        return ();
+  1533→    }
+  1534→
+  1535→    ;; ── 0x02 verify_execution — returns (is_safe, coherence, threshold) ───────
+  1536→    if (op == 2) {
+  1537→        (_, _, _, cell routes_dict) = load_storage();
+  1538→        int route_id = in_msg_body~load_uint(256);
+  1539→
+  1540→        slice key = begin_cell().store_uint(route_id, 256).end_cell().begin_parse();
+  1541→        (slice route_slice, int found) = routes_dict.dict_get?(256, key);
+  1542→        throw_unless(ERR_ROUTE_NOT_FOUND, found);
+  1543→
+  1544→        cell route_cell = route_slice~load_ref();
+  1545→        (_, _, _, int coherence, int threshold, _, int active) = unpack_route(route_cell);
+  1546→        throw_unless(ERR_ROUTE_INACTIVE, active);
+  1547→
+  1548→        ;; Emit log: is_safe coherence threshold
+  1549→        ;; (TON uses out-messages for events; minimal log here)
+  1550→        return ();
+  1551→    }
+  1552→
+  1553→    ;; ── 0x03 add_validator (no-op storage; validators managed off-chain) ──────
+  1554→    if (op == 3) {
+  1555→        assert_owner(sender_addr);
+  1556→        return ();
+  1557→    }
+  1558→
+  1559→    ;; ── 0x10 transfer_ownership ──────────────────────────────────────────────
+  1560→    if (op == 16) {
+  1561→        (_, int route_count, int version, cell routes_dict) = load_storage();
+  1562→        assert_owner(sender_addr);
+  1563→        slice new_owner = in_msg_body~load_bits(267);
+  1564→        save_storage(new_owner, route_count, version, routes_dict);
+  1565→        return ();
+  1566→    }
+  1567→}
+  1568→
+  1569→;; ── get_methods ───────────────────────────────────────────────────────────────
+  1570→
+  1571→(int, int, int) get_route_info(int route_id) method_id {
+  1572→    (_, _, _, cell routes_dict) = load_storage();
+  1573→    slice key = begin_cell().store_uint(route_id, 256).end_cell().begin_parse();
+  1574→    (slice route_slice, int found) = routes_dict.dict_get?(256, key);
+  1575→    throw_unless(ERR_ROUTE_NOT_FOUND, found);
+  1576→    cell route_cell = route_slice~load_ref();
+  1577→    (_, _, _, int coherence, int threshold, _, int active) = unpack_route(route_cell);
+  1578→    return (coherence, threshold, active);
+  1579→}
+  1580→
+  1581→int get_route_count() method_id {
+  1582→    (_, int route_count, _, _) = load_storage();
+  1583→    return route_count;
+  1584→}
+  1585→
+  1586→int get_version() method_id {
+  1587→    (_, _, int version, _) = load_storage();
+  1588→    return version;
+  1589→}
+  1590→
+  1591→slice get_owner() method_id {
+  1592→    (slice owner_addr, _, _, _) = load_storage();
+  1593→    return owner_addr;
+  1594→}
+  1595→
+  1596→=== END chains/ton/contracts/oracle.fc ===
+  1597→
+  1598→=== chains/ton/contracts/stdlib.fc ===
+  1599→;; stdlib.fc — TRION TON: non-built-in helpers only
+  1600→;;
+  1601→;; ton-compiler built-ins (do NOT redefine): begin_parse, load_int/uint/bits/ref,
+  1602→;; begin_cell, end_cell, store_*, throw_*, send_raw_message, get_data, set_data,
+  1603→;; my_address, now, cell_hash, slice_hash, new_dict, cell_null?,
+  1604→;; dict_set (returns cell), min, max, abs.
+  1605→;;
+  1606→;; dict_get? (returning slice, int) and equal_slices are NOT built-in:
+  1607→
+  1608→int equal_slices(slice a, slice b) asm "SDEQ";
+  1609→
+  1610→;; dict_get? — returns (found_slice, found_flag); used as routes_dict.dict_get?(key_len, key)
+  1611→(slice, int) dict_get?(cell dict, int key_len, slice key) asm(key dict key_len) "DICTGET" "NULLSWAPIFNOT";
+  1612→
+  1613→=== END chains/ton/contracts/stdlib.fc ===

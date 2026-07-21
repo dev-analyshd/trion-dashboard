@@ -1,0 +1,702 @@
+     1→   501→        return 0.0
+     2→   502→    return h / math.log2(n)
+     3→   503→
+     4→   504→
+     5→   505→def features_from_block(block: dict) -> tuple[list[float], dict]:
+     6→   506→    """Compute the 9 Φ-features + per-vector data for a Solana block."""
+     7→   507→    txs = block.get("transactions") or []
+     8→   508→    fee_counter = Counter()
+     9→   509→    cu_counter = Counter()        # log10-bucketed CU (used for f5)
+    10→   510→    cu_linear_counter = Counter() # linear-bucketed CU (used for f8 — distinct from f5)
+    11→   511→    program_counter = Counter()
+    12→   512→    account_counter = Counter()
+    13→   513→    instr_count_counter = Counter()
+    14→   514→    err_counter = Counter()
+    15→   515→    acct_per_tx_counter = Counter()   # for f7: accounts-per-tx complexity entropy
+    16→   516→    joint_fee_cu_counter = Counter()  # for f9: joint fee × CU correlation entropy
+    17→   517→
+    18→   518→    total_lamports = 0
+    19→   519→    successful = 0
+    20→   520→    failed = 0
+    21→   521→
+    22→   522→    for entry in txs:
+    23→   523→        meta = entry.get("meta") or {}
+    24→   524→        tx = entry.get("transaction") or {}
+    25→   525→        msg = (tx.get("message") if isinstance(tx, dict) else {}) or {}
+    26→   526→
+    27→   527→        fee = int(meta.get("fee") or 0)
+    28→   528→        cu = int(meta.get("computeUnitsConsumed") or 0)
+    29→   529→        err = meta.get("err")
+    30→   530→
+    31→   531→        # Bin lamport fees and CU into log buckets for entropy stability
+    32→   532→        fee_bucket = 0 if fee == 0 else int(math.floor(math.log10(fee + 1)))
+    33→   533→        cu_bucket = 0 if cu == 0 else int(math.floor(math.log10(cu + 1)))
+    34→   534→        fee_counter[fee_bucket] += 1
+    35→   535→        cu_counter[cu_bucket] += 1
+    36→   536→        # Linear CU bucket for f8 (distinct from log10 cu_bucket used in f5)
+    37→   537→        cu_lin_bucket = (0 if cu == 0 else
+    38→   538→                         1 if cu < 50_000 else
+    39→   539→                         2 if cu < 200_000 else
+    40→   540→                         3 if cu < 500_000 else
+    41→   541→                         4 if cu < 1_000_000 else 5)
+    42→   542→        cu_linear_counter[cu_lin_bucket] += 1
+    43→   543→
+    44→   544→        if err is None:
+    45→   545→            successful += 1
+    46→   546→            err_counter["ok"] += 1
+    47→   547→        else:
+    48→   548→            failed += 1
+    49→   549→            err_counter["err"] += 1
+    50→   550→
+    51→   551→        accts = msg.get("accountKeys") or []
+    52→   552→        for a in accts:
+    53→   553→            # accountKeys may be strings or {"pubkey": ...} objects
+    54→   554→            key = a if isinstance(a, str) else a.get("pubkey") if isinstance(a, dict) else None
+    55→   555→            if key:
+    56→   556→                account_counter[key] += 1
+    57→   557→
+    58→   558→        # f7 tracking: bin accounts-per-tx into log2 buckets (tx complexity diversity)
+    59→   559→        n_accts = len(accts)
+    60→   560→        acct_bin = 0 if n_accts == 0 else min(5, int(math.floor(math.log2(n_accts + 1))))
+    61→   561→        acct_per_tx_counter[acct_bin] += 1
+    62→   562→
+    63→   563→        # f9 tracking: joint (fee_bucket, cu_bucket) for correlation entropy
+    64→   564→        joint_fee_cu_counter[(fee_bucket, cu_bucket)] += 1
+    65→   565→
+    66→   566→        instrs = msg.get("instructions") or []
+    67→   567→        instr_count_counter[len(instrs)] += 1
+    68→   568→        for ix in instrs:
+    69→   569→            pid_idx = ix.get("programIdIndex")
+    70→   570→            if isinstance(pid_idx, int) and 0 <= pid_idx < len(accts):
+    71→   571→                pid = accts[pid_idx] if isinstance(accts[pid_idx], str) else (accts[pid_idx].get("pubkey") if isinstance(accts[pid_idx], dict) else None)
+    72→   572→                if pid:
+    73→   573→                    program_counter[pid] += 1
+    74→   574→
+    75→   575→        total_lamports += fee
+    76→   576→
+    77→   577→    # f1..f9 per L1.1 (Solana-mapped):
+    78→   578→    # f1 fee entropy, f2 account diversity, f3 tx-success ratio entropy,
+    79→   579→    # f4 program diversity, f5 cu entropy, f6 instr-count entropy,
+    80→   580→    # f7 program concentration (1-Gini-style proxy via top-k share),
+    81→   581→    # f8 cu/fee correlation proxy, f9 reserved (set to overall block entropy).
+    82→   582→    f1 = shannon(fee_counter)
+    83→   583→    f2 = shannon(account_counter)
+    84→   584→    f3 = shannon(err_counter)
+    85→   585→    f4 = shannon(program_counter)
+    86→   586→    f5 = shannon(cu_counter)
+    87→   587→    f6 = shannon(instr_count_counter)
+    88→   588→    # f7: Shannon entropy of accounts-per-tx distribution (tx complexity diversity)
+    89→   589→    #     H(log2-binned account counts per tx) — distinct from f2 (unique accounts)
+    90→   590→    f7 = shannon(acct_per_tx_counter)
+    91→   591→    # f8: Shannon entropy of CU linear-bucket distribution (distinct from f5)
+    92→   592→    #     f5 uses log10 buckets (scale-invariant); f8 uses linear buckets (scale-sensitive)
+    93→   593→    #     This captures whether CU distribution is skewed toward specific cost tiers
+    94→   594→    f8 = shannon(cu_linear_counter)
+    95→   595→    # f9: Shannon entropy of joint (fee_bucket × cu_bucket) distribution
+    96→   596→    #     Captures fee-compute correlation patterns — independent signal from f1/f5
+    97→   597→    f9 = shannon(joint_fee_cu_counter)
+    98→   598→
+    99→   599→    feats = [f1, f2, f3, f4, f5, f6, f7, f8, f9]
+   100→   600→
+   101→   601→    stats = {
+   102→   602→        "tx_count": len(txs),
+   103→   603→        "successful": successful,
+   104→   604→        "failed": failed,
+   105→   605→        "total_fee_lamports": total_lamports,
+   106→   606→        "unique_programs": len(program_counter),
+   107→   607→        "unique_accounts": len(account_counter),
+   108→   608→        "phi": sum(feats) / 9.0,
+   109→   609→    }
+   110→   610→    return feats, stats
+   111→   611→
+   112→   612→
+   113→   613→def vector_from_features(feats: list[float], slot: int) -> list[float]:
+   114→   614→    """Expand the 9 features into a deterministic 128-dim behavioural vector.
+   115→   615→    Bands 0-15 = f1, 16-31 = f2, ... 128-143 = f9 (last 17 reserved for slot
+   116→   616→    salt to prevent collapse to a single FAISS centroid).
+   117→   617→    """
+   118→   618→    out: list[float] = []
+   119→   619→    band = DIM // 9
+   120→   620→    for v in feats:
+   121→   621→        out.extend([float(v)] * band)
+   122→   622→    # pad to DIM with a deterministic slot-derived salt
+   123→   623→    seed = hashlib.sha256(f"{slot}".encode()).digest()
+   124→   624→    while len(out) < DIM:
+   125→   625→        b = seed[(len(out) - DIM) % 32]
+   126→   626→        out.append((b / 255.0) - 0.5)
+   127→   627→    return out[:DIM]
+   128→   628→
+   129→   629→
+   130→   630→def push_block(slot: int, feats: list[float], stats: dict) -> None:
+   131→   631→    entity_id = f"solana:slot:{slot}"
+   132→   632→    vector = vector_from_features(feats, slot)
+   133→   633→    payload = {
+   134→   634→        "vectors": [{
+   135→   635→            "entity_id":   entity_id,
+   136→   636→            "vector":      vector,
+   137→   637→            "magnitude":   max(1.0, math.log10(stats["total_fee_lamports"] + 1)),
+   138→   638→            "entropy":     stats["phi"],
+   139→   639→            "block_num":   slot,
+   140→   640→            "chain_id":    SOLANA_CHAIN_ID,
+   141→   641→            "chain_label": SOLANA_LABEL,
+   142→   642→            "vm_type":     "SVM",
+   143→   643→        }],
+   144→   644→        "block_num":      slot,
+   145→   645→        "block_features": feats,
+   146→   646→        "block_phi":      stats["phi"],
+   147→   647→        "entity_id":      entity_id,
+   148→   648→        "chain_id":       SOLANA_CHAIN_ID,
+   149→   649→        "chain_label":    SOLANA_LABEL,
+   150→   650→        "vm_type":        "SVM",
+   151→   651→        "metadata": {
+   152→   652→            "source":       "trion-svm",
+   153→   653→            "tx_count":     stats["tx_count"],
+   154→   654→            "successful":   stats["successful"],
+   155→   655→            "failed":       stats["failed"],
+   156→   656→            "total_fee":    stats["total_fee_lamports"],
+   157→   657→            "programs":     stats["unique_programs"],
+   158→   658→            "accounts":     stats["unique_accounts"],
+   159→   659→        },
+   160→   660→    }
+   161→   661→    url = f"{FAISS_SERVICE_URL}/index/add_batch"
+   162→   662→    # Circuit breaker: when FAISS has been failing, back off so we don't
+   163→   663→    # pile more requests into its queue (which is the main cause of
+   164→   664→    # cascading 15s timeouts). Returns True on success, False on failure.
+   165→   665→    global _faiss_failures, _faiss_skip_until
+   166→   666→    now_ts = time.monotonic()
+   167→   667→    if now_ts < _faiss_skip_until:
+   168→   668→        return False
+   169→   669→    try:
+   170→   670→        # Short timeout (4s) so a slow FAISS doesn't hold the indexer thread
+   171→   671→        # for 15s per slot. If FAISS can't respond in 4s it's saturated and
+   172→   672→        # retrying will only make it worse — let the circuit breaker kick in.
+   173→   673→        r = session.post(url, data=json.dumps(payload), timeout=4)
+   174→   674→        if r.status_code != 200:
+   175→   675→            print(f"[svm][slot={slot}] FAISS POST {r.status_code}: {r.text[:200]}", file=sys.stderr)
+   176→   676→            _faiss_failures += 1
+   177→   677→        else:
+   178→   678→            j = r.json()
+   179→   679→            print(f"[svm][slot={slot}] txs={stats['tx_count']:>4} ok={stats['successful']:>4} "
+   180→   680→                  f"fail={stats['failed']:>3} prog={stats['unique_programs']:>3} "
+   181→   681→                  f"acct={stats['unique_accounts']:>4} Φ={stats['phi']:.4f} "
+   182→   682→                  f"→ added={j.get('added',0)} idx_total={j.get('indexed_vectors','?')}")
+   183→   683→            _faiss_failures = 0
+   184→   684→            return True
+   185→   685→    except requests.RequestException as e:
+   186→   686→        print(f"[svm][slot={slot}] FAISS POST failed: {e}", file=sys.stderr)
+   187→   687→        _faiss_failures += 1
+   188→   688→    # On 3+ consecutive failures: open circuit for 30s, giving FAISS room
+   189→   689→    # to drain its queue and serve oracle reads (mental/spiritual/etc).
+   190→   690→    if _faiss_failures >= 3:
+   191→   691→        _faiss_skip_until = time.monotonic() + 30.0
+   192→   692→        print(f"[svm] FAISS circuit OPEN for 30s (consecutive failures={_faiss_failures})", file=sys.stderr)
+   193→   693→        _faiss_failures = 0
+   194→   694→    return False
+   195→   695→
+   196→   696→
+   197→   697→# Circuit-breaker state — used by post_to_faiss above.
+   198→   698→_faiss_failures: int = 0
+   199→   699→_faiss_skip_until: float = 0.0
+   200→   700→
+   201→   701→
+   202→   702→def main() -> int:
+   203→   703→    print("===============================================================")
+   204→   704→    print(" TRION L0-SVM: SOLANA BEHAVIORAL INDEXER")
+   205→   705→    print("===============================================================")
+   206→   706→    print(f" RPC          : {SOLANA_RPC_URL}")
+   207→   707→    print(f" Chain id     : {SOLANA_CHAIN_ID}  ({SOLANA_LABEL})")
+   208→   708→    print(f" FAISS target : {FAISS_SERVICE_URL}")
+   209→   709→    print(f" Poll         : {POLL_SLEEP_MS}ms")
+   210→   710→    print(" Streaming live Solana slots into FAISS. Press Ctrl+C to stop.")
+   211→   711→    print()
+   212→   712→
+   213→   713→    # Public Solana RPCs typically only serve `getBlock` for slots that are
+   214→   714→    # already FINALIZED. To stay reliably inside that window we keep our
+   215→   715→    # cursor a fixed offset behind the finalized tip. SAFE_LAG = 40 slots
+   216→   716→    # ≈ 16 s — well past the 32-block finality window.
+   217→   717→    SAFE_LAG = 40
+   218→   718→    last_slot = 0
+   219→   719→    consecutive_failures = 0
+   220→   720→
+   221→   721→    while True:
+   222→   722→        try:
+   223→   723→            current = rpc("getSlot", [{"commitment": "finalized"}])
+   224→   724→            if not isinstance(current, int):
+   225→   725→                time.sleep(POLL_SLEEP_MS / 1000.0)
+   226→   726→                continue
+   227→   727→
+   228→   728→            if last_slot == 0:
+   229→   729→                last_slot = current - SAFE_LAG
+   230→   730→
+   231→   731→            # Stay at least SAFE_LAG behind the finalized tip
+   232→   732→            tip = current - SAFE_LAG
+   233→   733→            if tip <= last_slot:
+   234→   734→                time.sleep(POLL_SLEEP_MS / 1000.0)
+   235→   735→                continue
+   236→   736→
+   237→   737→            target = last_slot + 1
+   238→   738→            try:
+   239→   739→                block = rpc("getBlock", [target, {
+   240→   740→                    "encoding": "json",
+   241→   741→                    "transactionDetails": "full",
+   242→   742→                    "maxSupportedTransactionVersion": 0,
+   243→   743→                    "rewards": False,
+   244→   744→                    "commitment": "finalized",
+   245→   745→                }])
+   246→   746→                consecutive_failures = 0
+   247→   747→            except RuntimeError as e:
+   248→   748→                msg = str(e)
+   249→   749→                # Skipped slot (-32007 / -32009) — advance silently
+   250→   750→                if "-32007" in msg or "-32009" in msg or "skipped" in msg.lower():
+   251→   751→                    last_slot = target
+   252→   752→                    continue
+   253→   753→                # Slot data missing (-32004) — typically the public node hasn't
+   254→   754→                # caught up. Skip ahead a bit and retry rather than spinning.
+   255→   755→                if "-32004" in msg or "not available" in msg.lower() or "older than" in msg.lower():
+   256→   756→                    consecutive_failures += 1
+   257→   757→                    # Jump forward by min(consecutive_failures * 5, 100) slots,
+   258→   758→                    # but never past the safe tip.
+   259→   759→                    jump = min(consecutive_failures * 5, 100)
+   260→   760→                    last_slot = min(last_slot + jump, tip)
+   261→   761→                    if consecutive_failures % 20 == 1:
+   262→   762→                        print(f"[svm] block missing for slot {target}, advancing +{jump} (cursor={last_slot}, tip={tip})", file=sys.stderr)
+   263→   763→                    time.sleep(0.3)
+   264→   764→                    continue
+   265→   765→                raise
+   266→   766→
+   267→   767→            if not block:
+   268→   768→                last_slot = target
+   269→   769→                continue
+   270→   770→
+   271→   771→            feats, stats = features_from_block(block)
+   272→   772→            push_block(target, feats, stats)
+   273→   773→            last_slot = target
+   274→   774→            consecutive_failures = 0
+   275→   775→
+   276→   776→        except KeyboardInterrupt:
+   277→   777→            print("\n[svm] shutdown requested")
+   278→   778→            return 0
+   279→   779→        except requests.HTTPError as e:
+   280→   780→            # 429 = rate limited. Public Solana RPCs throttle aggressively;
+   281→   781→            # back off for a longer window and resume from current confirmed slot.
+   282→   782→            status = getattr(e.response, "status_code", None)
+   283→   783→            if status == 429:
+   284→   784→                print(f"[svm] rate-limited (429), sleeping 15s", file=sys.stderr)
+   285→   785→                time.sleep(15.0)
+   286→   786→                last_slot = 0   # re-bootstrap from current confirmed slot
+   287→   787→            else:
+   288→   788→                print(f"[svm] HTTP {status}: {e}", file=sys.stderr)
+   289→   789→                time.sleep(3.0)
+   290→   790→        except Exception as e:
+   291→   791→            msg = str(e)
+   292→   792→            if "429" in msg or "Too Many Requests" in msg:
+   293→   793→                print(f"[svm] rate-limited (429), sleeping 15s", file=sys.stderr)
+   294→   794→                time.sleep(15.0)
+   295→   795→                last_slot = 0
+   296→   796→            else:
+   297→   797→                print(f"[svm] loop error: {e}", file=sys.stderr)
+   298→   798→                time.sleep(2.0)
+   299→   799→
+   300→   800→
+   301→   801→if __name__ == "__main__":
+   302→   802→    sys.exit(main())
+   303→   803→
+   304→   804→=== END chains/svm/svm_indexer.py ===
+   305→   805→
+   306→   806→=== chains/svm/package.json ===
+   307→   807→{
+   308→   808→  "name": "@workspace/trion-svm",
+   309→   809→  "version": "1.0.0",
+   310→   810→  "description": "TRION SVM — Solana behavioral indexer + oracle client",
+   311→   811→  "type": "module",
+   312→   812→  "scripts": {
+   313→   813→    "indexer": "tsx indexer.ts",
+   314→   814→    "client": "tsx client.ts",
+   315→   815→    "dev": "tsx --watch indexer.ts",
+   316→   816→    "build:program": "cd program && cargo build-sbf 2>&1",
+   317→   817→    "check:program": "cd program && cargo check 2>&1",
+   318→   818→    "test:program": "cd program && cargo test 2>&1"
+   319→   819→  },
+   320→   820→  "dependencies": {
+   321→   821→    "@coral-xyz/anchor": "^0.31.1",
+   322→   822→    "@solana/web3.js": "^1.98.4",
+   323→   823→    "bs58": "^6.0.0",
+   324→   824→    "node-fetch": "^3.3.2"
+   325→   825→  },
+   326→   826→  "devDependencies": {
+   327→   827→    "@types/node": "^20.12.7",
+   328→   828→    "tsx": "^4.11.0",
+   329→   829→    "typescript": "^5.4.5"
+   330→   830→  }
+   331→   831→}
+   332→   832→
+   333→   833→=== END chains/svm/package.json ===
+   334→   834→
+   335→   835→=== chains/svm/tsconfig.json ===
+   336→   836→{
+   337→   837→  "compilerOptions": {
+   338→   838→    "target": "ES2022",
+   339→   839→    "module": "ES2022",
+   340→   840→    "moduleResolution": "bundler",
+   341→   841→    "strict": true,
+   342→   842→    "esModuleInterop": true,
+   343→   843→    "outDir": "dist",
+   344→   844→    "rootDir": ".",
+   345→   845→    "skipLibCheck": true
+   346→   846→  },
+   347→   847→  "include": ["*.ts"],
+   348→   848→  "exclude": ["dist", "node_modules", "program"]
+   349→   849→}
+   350→   850→
+   351→   851→=== END chains/svm/tsconfig.json ===
+   352→   852→
+   353→   853→=== chains/ton/contracts/gate.fc ===
+   354→   854→;; gate.fc — TRION TON Execution Gate (TVM / FunC)
+   355→   855→;;
+   356→   856→;; Mirrors TRIONExecutionGate.sol on TON.
+   357→   857→;; Behavioral firewall: gate_check passes when phi >= threshold.
+   358→   858→;;
+   359→   859→;; Storage layout:
+   360→   860→;;   owner_addr (267 bits)
+   361→   861→;;   gates_dict (dict, key=256-bit gate_id, value=gate cell ref)
+   362→   862→;;
+   363→   863→;; Gate cell:
+   364→   864→;;   custom_threshold [64 bits] (0 = use route threshold)
+   365→   865→;;   check_count      [64 bits]
+   366→   866→;;   pass_count       [64 bits]
+   367→   867→;;   block_count      [64 bits]
+   368→   868→;;   last_phi         [64 bits]
+   369→   869→;;
+   370→   870→;; Op codes:
+   371→   871→;;   0x01  set_gate_threshold
+   372→   872→;;   0x02  gate_check  (owner/validator)
+   373→   873→;;   0x10  transfer_ownership
+   374→   874→
+   375→   875→#include "stdlib.fc";
+   376→   876→
+   377→   877→const int ERR_UNAUTHORIZED  = 100;
+   378→   878→const int ERR_INVALID_SCORE = 101;
+   379→   879→const int ERR_GATE_BLOCKED  = 120;
+   380→   880→const int ERR_GATE_NOT_FOUND = 121;
+   381→   881→
+   382→   882→
+   383→   883→;; ── Storage ───────────────────────────────────────────────────────────────────
+   384→   884→
+   385→   885→(slice, cell) load_storage() inline {
+   386→   886→    slice ds = get_data().begin_parse();
+   387→   887→    slice owner_addr = ds~load_bits(267);
+   388→   888→    cell gates_dict  = ds~load_ref();
+   389→   889→    return (owner_addr, gates_dict);
+   390→   890→}
+   391→   891→
+   392→   892→() save_storage(slice owner_addr, cell gates_dict) impure inline {
+   393→   893→    set_data(begin_cell()
+   394→   894→        .store_slice(owner_addr)
+   395→   895→        .store_ref(gates_dict)
+   396→   896→    .end_cell());
+   397→   897→}
+   398→   898→
+   399→   899→cell pack_gate(int threshold, int checks, int passes, int blocks, int phi) inline {
+   400→   900→    return begin_cell()
+   401→   901→        .store_uint(threshold, 64)
+   402→   902→        .store_uint(checks,    64)
+   403→   903→        .store_uint(passes,    64)
+   404→   904→        .store_uint(blocks,    64)
+   405→   905→        .store_uint(phi,       64)
+   406→   906→    .end_cell();
+   407→   907→}
+   408→   908→
+   409→   909→(int, int, int, int, int) unpack_gate(cell c) inline {
+   410→   910→    slice s = c.begin_parse();
+   411→   911→    int threshold = s~load_uint(64);
+   412→   912→    int checks    = s~load_uint(64);
+   413→   913→    int passes    = s~load_uint(64);
+   414→   914→    int blocks    = s~load_uint(64);
+   415→   915→    int phi       = s~load_uint(64);
+   416→   916→    return (threshold, checks, passes, blocks, phi);
+   417→   917→}
+   418→   918→
+   419→   919→;; ── recv_internal ─────────────────────────────────────────────────────────────
+   420→   920→
+   421→   921→() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+   422→   922→    if (in_msg_body.slice_empty?()) { return (); }
+   423→   923→
+   424→   924→    slice cs = in_msg_full.begin_parse();
+   425→   925→    cs~load_uint(4);
+   426→   926→    slice sender_addr = cs~load_bits(267);
+   427→   927→
+   428→   928→    int op = in_msg_body~load_uint(32);
+   429→   929→
+   430→   930→    ;; ── 0x01 set_gate_threshold ──────────────────────────────────────────────
+   431→   931→    if (op == 1) {
+   432→   932→        (slice owner_addr, cell gates_dict) = load_storage();
+   433→   933→        throw_unless(ERR_UNAUTHORIZED, equal_slices(sender_addr, owner_addr));
+   434→   934→
+   435→   935→        int gate_id   = in_msg_body~load_uint(256);
+   436→   936→        int threshold = in_msg_body~load_uint(64);
+   437→   937→        throw_if(ERR_INVALID_SCORE, threshold > 1000000);
+   438→   938→
+   439→   939→        slice gkey = begin_cell().store_uint(gate_id, 256).end_cell().begin_parse();
+   440→   940→        (slice existing, int found) = gates_dict.dict_get?(256, gkey);
+   441→   941→
+   442→   942→        int checks = 0; int passes = 0; int blocks = 0; int phi = 0;
+   443→   943→        if (found) {
+   444→   944→            cell gc = existing~load_ref();
+   445→   945→            (_, checks, passes, blocks, phi) = unpack_gate(gc);
+   446→   946→        }
+   447→   947→
+   448→   948→        cell new_gc = pack_gate(threshold, checks, passes, blocks, phi);
+   449→   949→        gates_dict~dict_set(256, gkey, new_gc.begin_parse());
+   450→   950→        save_storage(owner_addr, gates_dict);
+   451→   951→        return ();
+   452→   952→    }
+   453→   953→
+   454→   954→    ;; ── 0x02 gate_check ──────────────────────────────────────────────────────
+   455→   955→    if (op == 2) {
+   456→   956→        (slice owner_addr, cell gates_dict) = load_storage();
+   457→   957→
+   458→   958→        int gate_id        = in_msg_body~load_uint(256);
+   459→   959→        int phi            = in_msg_body~load_uint(64);
+   460→   960→        int route_threshold = in_msg_body~load_uint(64);
+   461→   961→
+   462→   962→        slice gkey = begin_cell().store_uint(gate_id, 256).end_cell().begin_parse();
+   463→   963→        (slice existing, int found) = gates_dict.dict_get?(256, gkey);
+   464→   964→
+   465→   965→        int threshold = route_threshold;
+   466→   966→        int checks = 0; int passes = 0; int blocks = 0;
+   467→   967→
+   468→   968→        if (found) {
+   469→   969→            cell gc = existing~load_ref();
+   470→   970→            (int ct, int ch, int pa, int bl, _) = unpack_gate(gc);
+   471→   971→            if (ct > 0) { threshold = ct; }
+   472→   972→            checks = ch; passes = pa; blocks = bl;
+   473→   973→        }
+   474→   974→
+   475→   975→        checks = checks + 1;
+   476→   976→        int passed = (phi >= threshold) ? 1 : 0;
+   477→   977→        if (passed) { passes = passes + 1; }
+   478→   978→        else { blocks = blocks + 1; }
+   479→   979→
+   480→   980→        cell new_gc = pack_gate(threshold, checks, passes, blocks, phi);
+   481→   981→        gates_dict~dict_set(256, gkey, new_gc.begin_parse());
+   482→   982→        save_storage(owner_addr, gates_dict);
+   483→   983→
+   484→   984→        throw_unless(ERR_GATE_BLOCKED, passed);
+   485→   985→        return ();
+   486→   986→    }
+   487→   987→
+   488→   988→    ;; ── 0x10 transfer_ownership ──────────────────────────────────────────────
+   489→   989→    if (op == 16) {
+   490→   990→        (slice owner_addr, cell gates_dict) = load_storage();
+   491→   991→        throw_unless(ERR_UNAUTHORIZED, equal_slices(sender_addr, owner_addr));
+   492→   992→        slice new_owner = in_msg_body~load_bits(267);
+   493→   993→        save_storage(new_owner, gates_dict);
+   494→   994→        return ();
+   495→   995→    }
+   496→   996→}
+   497→   997→
+   498→   998→;; ── get_methods ───────────────────────────────────────────────────────────────
+   499→   999→
+   500→  1000→(int, int, int, int) get_gate_stats(int gate_id) method_id {
+   501→  1001→    (_, cell gates_dict) = load_storage();
+   502→  1002→    slice gkey = begin_cell().store_uint(gate_id, 256).end_cell().begin_parse();
+   503→  1003→    (slice existing, int found) = gates_dict.dict_get?(256, gkey);
+   504→  1004→    throw_unless(ERR_GATE_NOT_FOUND, found);
+   505→  1005→    cell gc = existing~load_ref();
+   506→  1006→    (int threshold, int checks, int passes, int blocks, int phi) = unpack_gate(gc);
+   507→  1007→    return (threshold, checks, passes, blocks);
+   508→  1008→}
+   509→  1009→
+   510→  1010→=== END chains/ton/contracts/gate.fc ===
+   511→  1011→
+   512→  1012→=== chains/ton/contracts/intent.fc ===
+   513→  1013→;; intent.fc — TRION TON Intent Registry (TVM / FunC)
+   514→  1014→;;
+   515→  1015→;; Mirrors BTCPIntent.sol on TON.
+   516→  1016→;; Intent actions: 0=SWAP 1=TRANSFER 2=LIQUIDITY 3=STAKE 4=BORROW
+   517→  1017→;; Intent statuses: 0=PENDING 1=ROUTING 2=EXECUTING 3=COMPLETED 4=FAILED 5=EXPIRED 6=RESURRECTED
+   518→  1018→;;
+   519→  1019→;; Storage layout:
+   520→  1020→;;   owner_addr  (267 bits)
+   521→  1021→;;   intent_count (64 bits)
+   522→  1022→;;   intents_dict (dict, key=256-bit intent_hash, value=intent cell ref)
+   523→  1023→;;
+   524→  1024→;; Intent cell layout:
+   525→  1025→;;   intent_hash  [256 bits]
+   526→  1026→;;   entity_id    [256 bits]
+   527→  1027→;;   action       [8 bits]
+   528→  1028→;;   asset_in     [256 bits]
+   529→  1029→;;   asset_out    [256 bits]
+   530→  1030→;;   magnitude    [64 bits]
+   531→  1031→;;   source_chain [64 bits]
+   532→  1032→;;   deadline     [64 bits]
+   533→  1033→;;   status       [8 bits]
+   534→  1034→;;   created_at   [64 bits]
+   535→  1035→;;
+   536→  1036→;; Op codes:
+   537→  1037→;;   0x01  register_intent
+   538→  1038→;;   0x02  update_intent_status
+   539→  1039→;;   0x03  get_intent (get method preferred)
+   540→  1040→
+   541→  1041→#include "stdlib.fc";
+   542→  1042→
+   543→  1043→const int ERR_UNAUTHORIZED           = 100;
+   544→  1044→const int ERR_INTENT_EXISTS          = 110;
+   545→  1045→const int ERR_INTENT_NOT_FOUND       = 111;
+   546→  1046→const int ERR_INVALID_ACTION         = 112;
+   547→  1047→const int ERR_ZERO_MAGNITUDE         = 113;
+   548→  1048→const int ERR_INVALID_TRANSITION     = 114;
+   549→  1049→
+   550→  1050→
+   551→  1051→;; ── Storage ───────────────────────────────────────────────────────────────────
+   552→  1052→
+   553→  1053→(slice, int, cell) load_storage() inline {
+   554→  1054→    slice ds = get_data().begin_parse();
+   555→  1055→    slice owner_addr  = ds~load_bits(267);
+   556→  1056→    int intent_count  = ds~load_uint(64);
+   557→  1057→    cell intents_dict = ds~load_ref();
+   558→  1058→    return (owner_addr, intent_count, intents_dict);
+   559→  1059→}
+   560→  1060→
+   561→  1061→() save_storage(slice owner_addr, int intent_count, cell intents_dict) impure inline {
+   562→  1062→    set_data(begin_cell()
+   563→  1063→        .store_slice(owner_addr)
+   564→  1064→        .store_uint(intent_count, 64)
+   565→  1065→        .store_ref(intents_dict)
+   566→  1066→    .end_cell());
+   567→  1067→}
+   568→  1068→
+   569→  1069→;; ── Intent packing ────────────────────────────────────────────────────────────
+   570→  1070→
+   571→  1071→cell pack_intent(int hash, int entity, int action, int ain, int aout, int mag, int chain, int dl, int status, int ts) inline {
+   572→  1072→    return begin_cell()
+   573→  1073→        .store_uint(hash,   256).store_uint(entity,  256)
+   574→  1074→        .store_uint(action,  8) .store_uint(ain,     256)
+   575→  1075→        .store_uint(aout,   256).store_uint(mag,      64)
+   576→  1076→        .store_uint(chain,   64).store_uint(dl,        64)
+   577→  1077→        .store_uint(status,   8).store_uint(ts,        64)
+   578→  1078→    .end_cell();
+   579→  1079→}
+   580→  1080→
+   581→  1081→;; ── Status transition validator ───────────────────────────────────────────────
+   582→  1082→
+   583→  1083→int valid_transition(int from, int to) inline {
+   584→  1084→    ;; PENDING→ROUTING|FAILED|EXPIRED  ROUTING→EXECUTING|FAILED|EXPIRED
+   585→  1085→    ;; EXECUTING→COMPLETED|FAILED  FAILED→RESURRECTED
+   586→  1086→    if ((from == 0) & ((to == 1) | (to == 4) | (to == 5))) { return 1; }
+   587→  1087→    if ((from == 1) & ((to == 2) | (to == 4) | (to == 5))) { return 1; }
+   588→  1088→    if ((from == 2) & ((to == 3) | (to == 4)))              { return 1; }
+   589→  1089→    if ((from == 4) & (to == 6))                            { return 1; }
+   590→  1090→    return 0;
+   591→  1091→}
+   592→  1092→
+   593→  1093→;; ── recv_internal ─────────────────────────────────────────────────────────────
+   594→  1094→
+   595→  1095→() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+   596→  1096→    if (in_msg_body.slice_empty?()) { return (); }
+   597→  1097→
+   598→  1098→    slice cs = in_msg_full.begin_parse();
+   599→  1099→    cs~load_uint(4);
+   600→  1100→    slice sender_addr = cs~load_bits(267);
+   601→  1101→
+   602→  1102→    int op = in_msg_body~load_uint(32);
+   603→  1103→
+   604→  1104→    ;; ── 0x01 register_intent ─────────────────────────────────────────────────
+   605→  1105→    if (op == 1) {
+   606→  1106→        (slice owner_addr, int intent_count, cell intents_dict) = load_storage();
+   607→  1107→
+   608→  1108→        int hash   = in_msg_body~load_uint(256);
+   609→  1109→        int entity = in_msg_body~load_uint(256);
+   610→  1110→        int action = in_msg_body~load_uint(8);
+   611→  1111→        int ain    = in_msg_body~load_uint(256);
+   612→  1112→        int aout   = in_msg_body~load_uint(256);
+   613→  1113→        int mag    = in_msg_body~load_uint(64);
+   614→  1114→        int chain  = in_msg_body~load_uint(64);
+   615→  1115→        int dl     = in_msg_body~load_uint(64);
+   616→  1116→
+   617→  1117→        throw_if(ERR_INVALID_ACTION, action > 4);
+   618→  1118→        throw_if(ERR_ZERO_MAGNITUDE, mag == 0);
+   619→  1119→
+   620→  1120→        slice key = begin_cell().store_uint(hash, 256).end_cell().begin_parse();
+   621→  1121→        (_, int found) = intents_dict.dict_get?(256, key);
+   622→  1122→        throw_if(ERR_INTENT_EXISTS, found);
+   623→  1123→
+   624→  1124→        int ts = now();
+   625→  1125→        cell ic = pack_intent(hash, entity, action, ain, aout, mag, chain, dl, 0, ts);
+   626→  1126→        slice val = ic.begin_parse();
+   627→  1127→        intents_dict~dict_set(256, key, val);
+   628→  1128→        save_storage(owner_addr, intent_count + 1, intents_dict);
+   629→  1129→        return ();
+   630→  1130→    }
+   631→  1131→
+   632→  1132→    ;; ── 0x02 update_intent_status ────────────────────────────────────────────
+   633→  1133→    if (op == 2) {
+   634→  1134→        (slice owner_addr, int intent_count, cell intents_dict) = load_storage();
+   635→  1135→        throw_unless(ERR_UNAUTHORIZED, equal_slices(sender_addr, owner_addr));
+   636→  1136→
+   637→  1137→        int hash       = in_msg_body~load_uint(256);
+   638→  1138→        int new_status = in_msg_body~load_uint(8);
+   639→  1139→
+   640→  1140→        slice key = begin_cell().store_uint(hash, 256).end_cell().begin_parse();
+   641→  1141→        (slice rec_slice, int found) = intents_dict.dict_get?(256, key);
+   642→  1142→        throw_unless(ERR_INTENT_NOT_FOUND, found);
+   643→  1143→
+   644→  1144→        ;; read current status from the cell
+   645→  1145→        cell rec_cell = rec_slice~load_ref();
+   646→  1146→        slice rs = rec_cell.begin_parse();
+   647→  1147→        rs~skip_bits(256 + 256 + 8 + 256 + 256 + 64 + 64 + 64); ;; skip to status
+   648→  1148→        int cur_status = rs~load_uint(8);
+   649→  1149→
+   650→  1150→        throw_unless(ERR_INVALID_TRANSITION, valid_transition(cur_status, new_status));
+   651→  1151→
+   652→  1152→        ;; re-read full record to rebuild
+   653→  1153→        slice rs2 = rec_cell.begin_parse();
+   654→  1154→        int h  = rs2~load_uint(256); int e  = rs2~load_uint(256);
+   655→  1155→        int a  = rs2~load_uint(8);   int ai = rs2~load_uint(256);
+   656→  1156→        int ao = rs2~load_uint(256); int m  = rs2~load_uint(64);
+   657→  1157→        int sc = rs2~load_uint(64);  int d  = rs2~load_uint(64);
+   658→  1158→        rs2~load_uint(8); ;; old status
+   659→  1159→        int ts = rs2~load_uint(64);
+   660→  1160→
+   661→  1161→        cell new_cell = pack_intent(h, e, a, ai, ao, m, sc, d, new_status, ts);
+   662→  1162→        slice new_val = new_cell.begin_parse();
+   663→  1163→        intents_dict~dict_set(256, key, new_val);
+   664→  1164→        save_storage(owner_addr, intent_count, intents_dict);
+   665→  1165→        return ();
+   666→  1166→    }
+   667→  1167→}
+   668→  1168→
+   669→  1169→;; ── get_methods ───────────────────────────────────────────────────────────────
+   670→  1170→
+   671→  1171→(int, int, int) get_intent(int hash) method_id {
+   672→  1172→    (_, _, cell intents_dict) = load_storage();
+   673→  1173→    slice key = begin_cell().store_uint(hash, 256).end_cell().begin_parse();
+   674→  1174→    (slice rec_slice, int found) = intents_dict.dict_get?(256, key);
+   675→  1175→    throw_unless(ERR_INTENT_NOT_FOUND, found);
+   676→  1176→    cell rc = rec_slice~load_ref();
+   677→  1177→    slice s = rc.begin_parse();
+   678→  1178→    s~skip_bits(256 + 256);  int action = s~load_uint(8);
+   679→  1179→    s~skip_bits(256 + 256);  int mag    = s~load_uint(64);
+   680→  1180→    s~skip_bits(64 + 64);    int status = s~load_uint(8);
+   681→  1181→    return (action, mag, status);
+   682→  1182→}
+   683→  1183→
+   684→  1184→int get_intent_count() method_id {
+   685→  1185→    (_, int c, _) = load_storage();
+   686→  1186→    return c;
+   687→  1187→}
+   688→  1188→
+   689→  1189→=== END chains/ton/contracts/intent.fc ===
+   690→  1190→
+   691→  1191→=== chains/ton/contracts/liquidity.fc ===
+   692→  1192→;; liquidity.fc — TRION TON Liquidity Commitment (TVM / FunC)
+   693→  1193→;;
+   694→  1194→;; Mirrors LiquidityOcean.sol + BTCP_ESCROW.vy on TON.
+   695→  1195→;; Commitment statuses: 0=PENDING 1=SETTLED 2=REVERTED
+   696→  1196→;; Revert reasons: 0=TIMEOUT 1=COHERENCE_FAILURE 2=ROUTE_INVALID 3=MANUAL
+   697→  1197→;;
+   698→  1198→;; Storage layout:
+   699→  1199→;;   owner_addr       (267 bits)
+   700→  1200→;;   commitment_count (64 bits)
+
+[showing lines 1-700 of 1113; use offset=701 with limit to continue reading]

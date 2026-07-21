@@ -1,0 +1,961 @@
+"""
+TRION Protocol — L1.1: Physical Plane Φ(t)
+Nine Shannon entropy features.
+
+Φ(t) = weighted sum of 9 behavioral entropy features
+f1: Volume entropy       f2: Counterparty diversity
+f3: Temporal spacing     f4: Smart contract entropy
+f5: Value flow           f6: Wallet architecture
+f7: Cross-protocol       f8: Gas pattern
+f9: MEV interaction
+"""
+
+import math
+import time
+from collections import Counter
+from dataclasses import dataclass
+from typing import List, Optional
+
+
+@dataclass
+class TransactionData:
+    tx_hash:      str
+    timestamp:    float
+    block_number: int
+    from_addr:    str
+    to_addr:      str
+    value_wei:    int
+    gas_used:     int
+    gas_price:    int
+    is_contract:  bool
+    contract_addr: Optional[str] = None
+    input_len:    int = 0
+
+
+def shannon_entropy(values: List[float]) -> float:
+    if not values or sum(values) <= 0:
+        return 0.0
+    total = sum(values)
+    probs = [v / total for v in values if v > 0]
+    return -sum(p * math.log2(p) for p in probs)
+
+
+def normalize_entropy(H: float, n: int) -> float:
+    if n <= 1:
+        return 0.0
+    max_H = math.log2(n)
+    return min(1.0, H / max_H) if max_H > 0 else 0.0
+
+
+def compute_f1_volume_entropy(txs: List[TransactionData]) -> float:
+    """f1: Shannon entropy of transaction volume distribution."""
+    if not txs:
+        return 0.0
+    values = [tx.value_wei for tx in txs if tx.value_wei > 0]
+    if not values:
+        return 0.0
+    # Bin into 10 buckets
+    max_val = max(values)
+    if max_val == 0:
+        return 0.0
+    buckets = [0] * 10
+    for v in values:
+        idx = min(9, int(v * 10 / max_val))
+        buckets[idx] += 1
+    H = shannon_entropy([float(b) for b in buckets])
+    return normalize_entropy(H, 10)
+
+
+def compute_f2_counterparty_diversity(txs: List[TransactionData]) -> float:
+    """f2: Shannon entropy of counterparty addresses."""
+    if not txs:
+        return 0.0
+    addrs = [tx.to_addr for tx in txs]
+    counts = Counter(addrs)
+    H = shannon_entropy([float(c) for c in counts.values()])
+    return normalize_entropy(H, len(counts))
+
+
+def compute_f3_temporal_spacing(txs: List[TransactionData]) -> float:
+    """f3: Shannon entropy of inter-transaction time gaps (run-length)."""
+    if len(txs) < 2:
+        return 0.0
+    timestamps = sorted(tx.timestamp for tx in txs)
+    gaps = [timestamps[i+1] - timestamps[i] for i in range(len(timestamps)-1)]
+    if not gaps or max(gaps) == 0:
+        return 0.0
+    max_gap = max(gaps)
+    buckets = [0] * 10
+    for g in gaps:
+        idx = min(9, int(g * 10 / max_gap))
+        buckets[idx] += 1
+    H = shannon_entropy([float(b) for b in buckets])
+    return normalize_entropy(H, 10)
+
+
+def compute_f4_contract_entropy(txs: List[TransactionData]) -> float:
+    """f4: Shannon entropy of smart contract interactions."""
+    if not txs:
+        return 0.0
+    contract_txs = [tx.contract_addr for tx in txs if tx.is_contract and tx.contract_addr]
+    if not contract_txs:
+        return 0.0
+    counts = Counter(contract_txs)
+    H = shannon_entropy([float(c) for c in counts.values()])
+    return normalize_entropy(H, len(counts))
+
+
+def compute_f5_value_flow(txs: List[TransactionData], entity_addr: str) -> float:
+    """f5: Value flow directionality entropy (receive vs send)."""
+    if not txs:
+        return 0.0
+    received = sum(tx.value_wei for tx in txs if tx.to_addr.lower() == entity_addr.lower())
+    sent = sum(tx.value_wei for tx in txs if tx.from_addr.lower() == entity_addr.lower())
+    if received + sent == 0:
+        return 0.0
+    return shannon_entropy([float(received), float(sent)]) if received > 0 and sent > 0 else 0.0
+
+
+def compute_f6_wallet_architecture(txs: List[TransactionData]) -> float:
+    """f6: Wallet architecture entropy (EOA vs contract usage)."""
+    if not txs:
+        return 0.0
+    contract_count = sum(1 for tx in txs if tx.is_contract)
+    eoa_count = len(txs) - contract_count
+    H = shannon_entropy([float(eoa_count), float(contract_count)])
+    return normalize_entropy(H, 2)
+
+
+def compute_f7_cross_protocol(txs: List[TransactionData]) -> float:
+    """f7: Cross-protocol interaction entropy."""
+    if not txs:
+        return 0.0
+    protocols = [tx.contract_addr[:6] if tx.contract_addr else "EOA" for tx in txs]
+    counts = Counter(protocols)
+    H = shannon_entropy([float(c) for c in counts.values()])
+    return normalize_entropy(H, len(counts))
+
+
+def compute_f8_gas_pattern(txs: List[TransactionData]) -> float:
+    """f8: Gas usage pattern entropy."""
+    if not txs:
+        return 0.0
+    gas_values = [tx.gas_used for tx in txs if tx.gas_used > 0]
+    if not gas_values:
+        return 0.0
+    max_gas = max(gas_values)
+    if max_gas == 0:
+        return 0.0
+    buckets = [0] * 10
+    for g in gas_values:
+        idx = min(9, int(g * 10 / max_gas))
+        buckets[idx] += 1
+    H = shannon_entropy([float(b) for b in buckets])
+    return normalize_entropy(H, 10)
+
+
+def compute_f9_mev_interaction(txs: List[TransactionData]) -> float:
+    """f9: MEV interaction entropy (5 categories: sandwich/frontrun/backrun/arb/clean)."""
+    if not txs:
+        return 0.0
+    # Heuristic: zero-value txs with contract interaction suggest MEV activity
+    mev_like = sum(1 for tx in txs if tx.is_contract and tx.value_wei == 0 and tx.input_len > 100)
+    total = len(txs)
+    if total == 0:
+        return 0.0
+    ratio = mev_like / total
+    # Entropy of 5-category MEV distribution (heuristic)
+    cats = ax(0.01, ratio * 0.3), max(0.01, ratio * 0.2),
+            max(0.01, ratio * 0.2), max(0.01, ratio * 0.1),
+            max(0.01, 1 - ratio)]
+    H = shannon_entropy(cats)
+    return normalize_entropy(H, 5)
+
+
+PHI_WEIGHTS = [0.15, 0.15, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10]
+
+
+def compute_phi(txs: List[TransactionData], entity_addr: str) -> dict:
+    """Full Φ(t) computation — all 9 features weighted."""
+    f1 = compute_f1_volume_entropy(txs)
+    f2 = compute_f2_counterparty_diversity(txs)
+    f3 = compute_f3_temporal_spacing(txs)
+    f4 = compute_f4_contract_entropy(txs)
+    f5 = compute_f5_value_flow(txs, entity_addr)
+    f6 = compute_f6_wallet_architecture(txs)
+    f7 = compute_f7_cross_protocol(txs)
+    f8 = compute_f8_gas_pattern(txs)
+    f9 = compute_f9_mev_interaction(txs)
+
+    features = [f1, f2, f3, f4, f5, f6, f7, f8, f9]
+    phi_raw = sum(w * f for w, f in zip(PHI_WEIGHTS, features))
+
+    return {
+        "phi_raw": phi_raw,
+        "f1": f1, "f2": f2, "f3": f3,
+        "f4": f4, "f5": f5, "f6": f6,
+        "f7": f7, "f8": f8, "f9": f9,
+        "tx_count": len(txs),
+        "weights": PHI_WEIGHTS,
+    }
+
+
+if __name__ == "__main__":
+    txs = [
+        TransactionData(
+            tx_hash=f"0x{i:064x}", timestamp=1700000000 + i*3600,
+            block_number=18000000+i, from_addr="0xUSER",
+            to_addr=f"0x{'a'*38}{i%10:02d}", value_wei=int(1e17) * (i+1),
+            gas_used=21000 + i*1000, gas_price=int(20e9),
+            is_contract=i % 3 == 0,
+            contract_addr=f"0xPROTO{i%5:040d}" if i % 3 == 0 else None,
+            input_len=68 if i % 3 == 0 else 0,
+        )
+        for i in range(20)
+    ]
+    result = compute_phi(txs, "0xUSER")
+    print(f"Φ(t) = {result['phi_raw']:.4f}")
+    for k in ['f1','f2','f3','f4','f5','f6','f7','f8','f9']:
+        print(f"  {k} = {result[k]:.4f}")
+    assert 0 <= result['phi_raw'] <= 1
+    for k in ['f1','f2','f3','f4','f5','f6','f7','f8','f9']:
+        assert 0 <= result[k] <= 1, f"{k} out of range: {result[k]}"
+    print("PHASE 10 PASS — Φ(t) nine-feature engine verified")
+===SEPARATOR===
+"""
+TRION Protocol — L2.4 Resurrection Inference
+Chapter 7.2: Dormancy Taxonomy and Resurrection
+
+Five dormancy types with κ (decay coefficient) values:
+
+ABANDONED       κ = 0.008   >365 days, team absent, no governance.
+                             High probability of hostile takeover if resurrected.
+
+HIBERNATION     κ = 0.003   30–365 days, team still signing.
+                             Moderate resurrection probability.
+
+MIGRATION       κ = 0.000   Activity stops on chain A, equivalent activity
+                             starts on chain B. Not truly dormant.
+
+REGULATORY_PAUSE κ = 0.001  Sudden cessation following known regulatory event.
+                             External force, not internal failure.
+
+EXPLOIT_RECOVERY κ = 0.005  Sharp cessation following exploit.
+                             Probability depends on exploit severity + team response.
+
+Δ_resurrection = w_d · e^(-κ·T) · w_c · sim(S_pre, S_react) · w_x · g(C)
+
+T         = dormancy duration (days)
+sim(·,·)  = behavioral similarity between pre-dormancy and reactive patterns
+g(C)      = context quality function [0, 1]
+
+Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+License: CC0
+"""
+
+from __future__ import annotations
+import math
+from dataclasses import dataclass
+from enum import Enum
+from typing import Optional
+
+
+class DormancyType(Enum):
+    ABANDONED         = "ABANDONED"
+    HIBERNATION       = "HIBERNATION"
+    MIGRATION         = "MIGRATION"
+    REGULATORY_PAUSE  = "REGULATORY_PAUSE"
+    EXPLOIT_RECOVERY  = "EXPLOIT_RECOVERY"
+
+
+# κ values per dormancy type (decay coefficient)
+KAPPA: dict[DormancyType, float] = {
+    DormancyType.ABANDONED:         0.008,
+    DormancyType.HIBERNATION:       0.003,
+    DormancyType.MIGRATION:         0.000,  # Not truly dormant — κ=0
+    DormancyType.REGULATORY_PAUSE:  0.001,
+    DormancyType.EXPLOIT_RECOVERY:  0.005,
+}
+
+# Component weights for Δ_resurrection
+W_DECAY       = 0.40   # w_d — dormancy decay component
+W_CONTINUITY  = 0.35   # w_c — behavioral continuity component
+W_CONTEXT     = 0.25   # w_x — external context component
+
+
+@dataclass
+class DormancyProfile:
+    """Complete dormancy characterization for an asset."""
+    entity_id:          str
+    dormancy_type:      DormancyType
+    dormancy_days:      float       # T — total days dormant
+    team_activity:      bool        # Team signing activity during dormancy
+    governance_active:  bool
+    exploit_severity:   float       # [0, 1] — 0 = none, 1 = total loss
+    team_response_quality: float    # [0, 1] for EXPLOIT_RECOVERY
+    known_regulatory:   bool        # True if regulatory event preceded cessation
+    chain_b_activity:   float       # [0, 1] activity on alternative chain
+
+
+@dataclass
+class ResurrectionScore:
+    """Output of resurrection inference."""
+    entity_id:                str
+    dormancy_type:            DormancyType
+    kappa:                    float
+    delta_resurrection:       float   # [0, 1] overall resurrection health score
+    decay_component:          float   # e^(-κ·T)
+    continuity_component:     float   # sim(S_pre, S_react)
+    context_component:        float   # g(C)
+    hostile_takeover_risk:    float   # [0, 1] — ABANDONED type especially
+    dormancy_days:            float
+    signal_type:              str     # "RESURRECTION" or "MIGRATION"
+    warning:                  Optional[str]
+
+
+def classify_dormancy(profile: DormancyProfile) -> DormancyType:
+    """
+    Classify dormancy type from behavioral evidence.
+    Classification order matters — check MIGRATION first (κ=0 means no decay).
+    """
+    if profile.chain_b_activity > 0.60:
+        return DormancyType.MIGRATION
+
+    if profile.known_regulatory and profile.dormancy_days < 365:
+        return DormancyType.REGULATORY_PAUSE
+
+    if profile.exploit_severity > 0.10 and not profile.team_activity:
+        return DormancyType.EXPLOIT_RECOVERY
+
+    if profile.team_activity and profile.dormancy_days < 365:
+        return DormancyType.HIBERNATION
+
+    return DormancyType.ABANDONED
+
+
+def compute_decay_component(kappa: float, dormancy_days: float) -> float:
+    """
+    Decay component: e^(-κ·T)
+    κ = 0.000 (MIGRATION) → e^0 = 1.0 (no decay)
+    κ = 0.008 (ABANDONED) at T=365 → e^{-2.92} ≈ 0.054
+    """
+    return math.exp(-kappa * dormancy_days)
+
+
+def compute_continuity_component(
+    pre_dormancy_features:  list[float],
+    reactive_features:      list[float],
+) -> float:
+    """
+    sim(S_pre, S_react) — cosine similarity of behavioral feature vectors.
+    S_pre  = behavioral feature vector in last 90 days before dormancy
+    S_react = behavioral feature vector in first 30 days after reactivation
+    """
+    if not pre_dormancy_features or not reactive_features:
+        return 0.50  # Neutral when no data
+
+    n = min(len(pre_dormancy_features), len(reactive_features))
+    if n == 0:
+        return 0.50
+
+    pre  = pre_dormancy_features[:n]
+    reac = reactive_features[:n]
+
+    dot   = sum(a * b for a, b in zip(pre, reac))
+    mag_a = sum(a ** 2 for a in pre) ** 0.5
+    mag_b = sum(b ** 2 for b in reac) ** 0.5
+
+    if mag_a <= 0 or mag_b <= 0:
+        return 0.0
+
+    similarity = dot / (mag_a * mag_b)
+    return max(0.0, min(1.0, (similarity + 1.0) / 2.0))  # Map [-1,1] → [0,1]
+
+
+def compute_context_component(profile: DormancyProfile) -> float:
+    """
+    g(C) — external context quality [0, 1]
+    Factors: regulatory clarity, exploit resolution, market conditions
+    """
+    if profile.dormancy_type == DormancyType.MIGRATION:
+        return 0.90  # Migration is intentional — context is strong
+
+    if profile.dormancy_type == DormancyType.REGULATORY_PAUSE:
+        # Context quality depends on regulatory clarity at reactivation
+        return 0.70 if profile.known_regulatory else 0.40
+
+    if profile.dormancy_type == DormancyType.EXPLOIT_RECOVERY:
+        # Context depends on how well team addressed the exploit
+        return max(0.0, profile.team_response_quality * (1.0 - profile.exploit_severity * 0.5))
+
+    if profile.dormancy_type == DormancyType.HIBERNATION:
+        return 0.75 if profile.team_activity else 0.50
+
+    # ABANDONED — very low context quality
+    return max(0.0, 0.30 * profile.governance_active)
+
+
+def compute_resurrection(
+    profile:                 DormancyProfile,
+    pre_dormancy_features:   list[float],
+    reactive_features:       list[float],
+) -> ResurrectionScore:
+    """
+    Δ_resurrection = w_d · e^(-κ·T) · w_c · sim(S_pre, S_react) · w_x · g(C)
+
+    Note: This is a WEIGHTED SUM (not product) of the three components.
+    Each component is multiplied by its weight and summed.
+    """
+    dormancy_type = profile.dormancy_type
+    kappa         = KAPPA[dormancy_type]
+
+    decay       = compute_decay_component(kappa, profile.dormancy_days)
+    continuity  = compute_continuity_component(pre_dormancy_features, reactive_features)
+    context     = compute_context_component(profile)
+
+    delta = (W_DECAY * decay) + (W_CONTINUITY * continuity) + (W_CONTEXT * context)
+    delta = max(0.0, min(1.0, delta))
+
+    # Hostile takeover risk — especially high for ABANDONED assets
+    hostile_risk = 0.0
+    if dormancy_type == DormancyType.ABANDONED:
+        hostile_risk = max(0.0, 1.0 - decay)  # Higher as decay progresses
+    elif dormancy_type == DormancyType.EXPLOIT_RECOVERY:
+        hostile_risk = profile.exploit_severity * 0.50
+
+    warning = None
+    if dormancy_type == DormancyType.ABANDONED:
+        warning = (
+            f"ABANDONED asset reactivated after {profile.dormancy_days:.0f} days. "
+            f"Hostile takeover risk={hostile_risk:.2f}. Full behavioral audit required."
+        )
+    elif dormancy_type == DormancyType.EXPLOIT_RECOVERY:
+        warning = (
+            f"EXPLOIT_RECOVERY: severity={profile.exploit_severity:.2f}. "
+            f"Team response quality={profile.team_response_quality:.2f}."
+        )
+
+    signal_type = "MIGRATION" if dormancy_type == DormancyType.MIGRATION else "RESURRECTION"
+
+    return ResurrectionScore(
+        entity_id              = profile.entity_id,
+        dormancy_type          = dormancy_type,
+        kappa                  = kappa,
+        delta_resurrection     = delta,
+        decay_component        = decay,
+        continuity_component   = continuity,
+        context_component      = context,
+        hostile_takeover_risk  = hostile_risk,
+        dormancy_days          = profile.dormancy_days,
+        signal_type            = signal_type,
+        warning                = warning,
+    )
+
+
+if __name__ == "__main__":
+    # ABANDONED asset test
+    profile = DormancyProfile(
+        entity_id="abandoned_token",
+        dormancy_type=DormancyType.ABANDONED,
+        dormancy_days=500.0,
+        team_activity=False,
+        governance_active=False,
+        exploit_severity=0.0,
+        team_response_quality=0.0,
+        known_regulatory=False,
+        chain_b_activity=0.0,
+    )
+    pre  = [0.8, 0.6, 0.4, 0.9, 0.7]
+    reac = [0.3, 0.2, 0.8, 0.1, 0.9]  # Very different behavior
+    result = compute_resurrection(profile, pre, reac)
+    print(f"ABANDONED: Δ_res={result.delta_resurrection:.4f} κ={result.kappa} "
+          f"hostile_risk={result.hostile_takeover_risk:.4f}")
+    assert result.delta_resurrection < 0.5  # Low resurrection score
+
+    # HIBERNATION test
+    profile_h = DormancyProfile(
+        entity_id="hibernating_protocol",
+        dormancy_type=DormancyType.HIBERNATION,
+        dormancy_days=60.0,
+        team_activity=True,
+        governance_active=True,
+        exploit_severity=0.0,
+        team_response_quality=1.0,
+        known_regulatory=False,
+        chain_b_activity=0.0,
+    )
+    pre_h  = [0.8, 0.6, 0.4, 0.9, 0.7]
+    reac_h = [0.8, 0.6, 0.4, 0.9, 0.7]  # Similar behavior — healthy resurrection
+    result_h = compute_resurrection(profile_h, pre_h, reac_h)
+    print(f"HIBERNATION: Δ_res={result_h.delta_resurrection:.4f} κ={result_h.kappa}")
+    assert result_h.delta_resurrection > 0.5
+
+    print("L2.4 Resurrection Inference: PASS")
+===SEPARATOR===
+"""
+TRION Protocol — L2.7 Trajectory Anomaly Monitor
+Chapter 7.1: Genesis Inference — Adversarial Protection
+
+TRAJ_ANOMALY(asset, t) = KL_divergence(P_actual, P_expected(matched_archetype))
+
+When TRAJ_ANOMALY > θ_anomaly:
+    - Genesis Signal invalidated
+    - MANIPULATION_ALERT raised
+    - conf_genesis locked (stops growing)
+
+KL divergence measures how much P_actual (observed behavior) differs
+from P_expected (what the matched archetype predicts). High KL = behavioral
+divergence from archetype expectation = anomaly.
+
+KL(P || Q) = Σ_i P(i) · log(P(i) / Q(i))
+
+Also used for ANIMA pre-manifestation signals:
+    TRAJECTORY signal contains full probability distribution of expected behavioral
+    sequences, not point predictions.
+
+Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+License: CC0
+"""
+
+from __future__ import annotations
+import math
+from dataclasses import dataclass
+from typing import Optional
+
+
+# Default anomaly threshold — KL divergence above this triggers alert
+THETA_ANOMALY_DEFAULT: float = 0.50
+
+
+@dataclass
+class TrajectoryDistribution:
+    """
+    Probability distribution over behavioral outcomes.
+    P_actual: what we observe.
+    P_expected: what the matched archetype predicts.
+
+    Both must sum to 1.0. Same support (outcome categories).
+    """
+    outcomes:  list[str]    # Outcome category labels
+    probs:     list[float]  # Probability for each outcome
+
+
+@dataclass
+class TrajectoryAnomalyResult:
+    """
+    TRAJ_ANOMALY output with full diagnostic information.
+    """
+    entity_id:           str
+    kl_divergence:       float   # KL(P_actual || P_expected)
+    theta_anomaly:       float   # Threshold for alert
+    anomaly_detected:    bool    # kl_divergence > theta_anomaly
+    genesis_invalidated: bool    # Genesis signal locked
+    alert_type:          Optional[str]
+    dominant_deviation:  Optional[str]  # Outcome with largest deviation
+    p_actual:            list[float]
+    p_expected:          list[float]
+    reflexivity_flag:    bool    # True if anomaly may be self-caused by TRION signal
+
+
+def kl_divergence(p_actual: list[float], p_expected: list[float], epsilon: float = 1e-10) -> float:
+    """
+    KL(P || Q) = Σ_i P(i) · log(P(i) / Q(i))
+
+    epsilon prevents log(0). P and Q must have same length.
+    Result is always >= 0 (Gibbs inequality). KL = 0 iff P = Q.
+    """
+    n = min(len(p_actual), len(p_expected))
+    if n == 0:
+        return 0.0
+
+    # Normalize to ensure valid distributions
+    sum_p = sum(p_actual[:n])
+    sum_q = sum(p_expected[:n])
+
+    p = ax(epsilon, x / sum_p) for x in p_actual[:n]] if sum_p > 0 else [epsilon] * n
+    q = ax(epsilon, x / sum_q) for x in p_expected[:n]] if sum_q > 0 else [epsilon] * n
+
+    return sum(p[i] * math.log(p[i] / q[i]) for i in range(n))
+
+
+def compute_trajectory_anomaly(
+    entity_id:      str,
+    p_actual:       TrajectoryDistribution,
+    p_expected:     TrajectoryDistribution,
+    theta_anomaly:  float = THETA_ANOMALY_DEFAULT,
+    in_genesis:     bool  = True,
+    reflexivity_oe: float = 0.0,  # Observer Effect factor [0, 1]
+) -> TrajectoryAnomalyResult:
+    """
+    Compute KL(P_actual || P_expected) and determine if anomaly threshold exceeded.
+
+    If TRAJ_ANOMALY > theta_anomaly AND in_genesis:
+        - Genesis signal invalidated (conf_genesis locked)
+        - MANIPULATION_ALERT raised
+
+    reflexivity_oe: if high, anomaly may be caused by TRION's own prediction
+    (reflexivity attack) rather than manipulation.
+    """
+    if len(p_actual.probs) != len(p_expected.probs):
+        # Truncate to shorter — different outcome spaces
+        n = min(len(p_actual.probs), len(p_expected.probs))
+        p_act = p_actual.probs[:n]
+        p_exp = p_expected.probs[:n]
+    else:
+        p_act = p_actual.probs
+        p_exp = p_expected.probs
+
+    kl = kl_divergence(p_act, p_exp)
+
+    anomaly = kl > theta_anomaly
+
+    # Identify dominant deviation
+    dominant_deviation = None
+    if anomaly and p_actual.outcomes:
+        n = min(len(p_actual.outcomes), len(p_act), len(p_exp))
+        eps = 1e-10
+        sum_p = sum(p_act) or 1.0
+        sum_q = sum(p_exp) or 1.0
+        deviations = []
+        for i in range(n):
+            pi = max(eps, p_act[i] / sum_p)
+            qi = max(eps, p_exp[i] / sum_q)
+            deviations.append((pi * math.log(pi / qi), p_actual.outcomes[i]))
+        deviations.sort(reverse=True)
+        dominant_deviation = deviations[0][1] if deviations else None
+
+    # Reflexivity check: TRION's own signals may cause the anomaly
+    reflexivity_flag = (reflexivity_oe > 0.50) and anomaly
+
+    alert_type = None
+    genesis_invalidated = False
+
+    if anomaly:
+        if reflexivity_flag:
+            alert_type = "REFLEXIVITY_ANOMALY"  # May be self-caused
+        elif kl > theta_anomaly * 3:
+            alert_type = "SEVERE_MANIPULATION_ALERT"
+            genesis_invalidated = in_genesis
+        else:
+            alert_type = "TRAJECTORY_ANOMALY"
+            genesis_invalidated = in_genesis
+
+    return TrajectoryAnomalyResult(
+        entity_id          = entity_id,
+        kl_divergence      = kl,
+        theta_anomaly      = theta_anomaly,
+        anomaly_detected   = anomaly,
+        genesis_invalidated = genesis_invalidated,
+        alert_type         = alert_type,
+        dominant_deviation = dominant_deviation,
+        p_actual           = p_act,
+        p_expected         = p_exp,
+        reflexivity_flag   = reflexivity_flag,
+    )
+
+
+def build_trajectory_signal(
+    entity_id:         str,
+    p_expected:        TrajectoryDistribution,
+    manifestation_window_blocks: int,
+    historical_matches: int,
+    reflexivity_oe:    float = 0.0,
+) -> dict:
+    """
+    Build a TRAJECTORY signal payload.
+    Contains full probability distribution — NOT a point prediction.
+    reflexivity_flag included per whitepaper spec.
+    """
+    return {
+        "signal_type":              "TRAJECTORY",
+        "entity_id":                entity_id,
+        "probability_distribution": dict(zip(p_expected.outcomes, p_expected.probs)),
+        "manifestation_window_blocks": manifestation_window_blocks,
+        "historical_match_count":   historical_matches,
+        "reflexivity_flag":         reflexivity_oe > 0.30,
+        "oe_factor":                reflexivity_oe,
+        "note": (
+            "ANIMA pre-manifestation signal. "
+            "Full probability distribution, not point prediction. "
+            "reflexivity_flag=True → OE_factor dampening applied."
+        ),
+    }
+
+
+if __name__ == "__main__":
+    # Test 1: Healthy trajectory (P_actual ≈ P_expected)
+    outcomes = ["GROWTH", "STABLE", "DECLINE", "CRASH"]
+    p_expected = TrajectoryDistribution(outcomes, [0.50, 0.30, 0.15, 0.05])
+    p_actual_healthy = TrajectoryDistribution(outcomes, [0.48, 0.31, 0.16, 0.05])
+    r_healthy = compute_trajectory_anomaly("healthy_token", p_actual_healthy, p_expected)
+    print(f"Healthy: KL={r_healthy.kl_divergence:.6f} anomaly={r_healthy.anomaly_detected}")
+    assert not r_healthy.anomaly_detected
+
+    # Test 2: Manipulated trajectory (P_actual very different from P_expected)
+    p_actual_manip = TrajectoryDistribution(outcomes, [0.02, 0.03, 0.05, 0.90])
+    r_manip = compute_trajectory_anomaly("manipulated_token", p_actual_manip, p_expected, in_genesis=True)
+    print(f"Manipulated: KL={r_manip.kl_divergence:.6f} anomaly={r_manip.anomaly_detected} "
+          f"genesis_locked={r_manip.genesis_invalidated} dominant={r_manip.dominant_deviation}")
+    assert r_manip.anomaly_detected
+    assert r_manip.genesis_invalidated
+
+    # Test 3: Build TRAJECTORY signal
+    sig = build_trajectory_signal("entity_X", p_expected, 1000, 47, reflexivity_oe=0.25)
+    print(f"TRAJECTORY signal: type={sig['signal_type']} matches={sig['historical_match_count']}")
+
+    print("L2.7 Trajectory Anomaly Monitor: PASS")
+===SEPARATOR===
+"""
+TRION Protocol — L9.1: Cross-Species Liquidity (XSL)
+Chapter 13: Biological-Digital Integration
+
+XSL(entity, t) = TV(t) · FS(t) · RR(t) / (1 + TP(t))
+
+Components:
+  TV = Trade Volume continuity across behavioral species/chain families
+       TV = 1 - |volume_change_vs_30d_avg| / max_observed_change
+  FS = Functional Similarity score — how similar the entity's behavioral
+       function is across different chain contexts
+       FS = cos_sim(behavioral_vector_chain_A, behavioral_vector_chain_B)
+  RR = Reciprocal Recognition Rate — fraction of cross-chain transactions
+       that are mutually recognized (not just one-sided)
+  TP = Trade Protocol Friction — normalized measure of cross-chain friction
+       (high TP = poor interoperability, reduces XSL)
+
+XSL ∈ [0, 1]
+  ≥ 0.70  KEYSTONE_LIQUIDITY — entity is a cross-species connector
+  0.40–0.70  BRIDGE_LIQUIDITY — partial cross-species function
+  < 0.40  SPECIES_ISOLATED — entity confined to single behavioral niche
+
+Biological analogy (whitepaper L9.1):
+  In ecological systems, keystone species provide liquidity that benefits
+  many other species. XSL measures the DeFi equivalent: entities that
+  provide liquidity across protocol and chain "species" boundaries.
+
+F6 Falsifiability: XSL decline detection must trigger 72h behavioral shift window.
+
+Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+License: CC0
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from typing import List, Optional
+
+XSL_KEYSTONE = 0.70
+XSL_BRIDGE   = 0.40
+
+
+@dataclass
+class CrossChainBehavior:
+    """Behavioral snapshot for one chain context."""
+    chain_id:         str
+    behavioral_vector: List[float]
+    volume_30d:       float
+    tx_count:         int
+    unique_counterparties: int
+    inbound_recognition: float
+    outbound_recognition: float
+
+
+def compute_tv(
+    current_volume:      float,
+    avg_volume_30d:      float,
+    max_observed_change: float = 1.0,
+) -> float:
+    """
+    TV = Trade Volume continuity.
+    TV = 1 - |current - avg| / max_observed_change
+    """
+    if avg_volume_30d <= 0:
+        return 0.50
+    change = abs(current_volume - avg_volume_30d)
+    norm_change = change / max(max_observed_change, avg_volume_30d)
+    return max(0.0, min(1.0, 1.0 - norm_change))
+
+
+def compute_fs(
+    vec_a: List[float],
+    vec_b: List[float],
+) -> float:
+    """
+    FS = cosine_similarity(behavioral_vector_A, behavioral_vector_B).
+    Measures functional similarity of entity across chain contexts.
+    """
+    if not vec_a or not vec_b:
+        return 0.50
+    n = min(len(vec_a), len(vec_b))
+    a, b = vec_a[:n], vec_b[:n]
+    dot   = sum(ai * bi for ai, bi in zip(a, b))
+    na    = math.sqrt(sum(ai ** 2 for ai in a))
+    nb    = math.sqrt(sum(bi ** 2 for bi in b))
+    if na == 0 or nb == 0:
+        return 0.0
+    return max(0.0, min(1.0, dot / (na * nb)))
+
+
+def compute_rr(
+    inbound_recognition_rate:  float,
+    outbound_recognition_rate: float,
+) -> float:
+    """
+    RR = Reciprocal Recognition Rate.
+    RR = geometric mean of inbound and outbound recognition
+    High RR: cross-chain transactions are mutually acknowledged.
+    Low RR: one-sided flows that don't propagate behavioral context.
+    """
+    if inbound_recognition_rate <= 0 or outbound_recognition_rate <= 0:
+        return 0.0
+    return math.sqrt(inbound_recognition_rate * outbound_recognition_rate)
+
+
+def compute_tp(
+    bridge_latency_blocks: float,
+    slippage_pct:          float,
+    failure_rate:          float,
+    max_latency_ref:       float = 100.0,
+) -> float:
+    """
+    TP = Trade Protocol Friction ∈ [0, 1].
+    Combines latency, slippage, and failure rate.
+    Low TP = smooth cross-chain (good for XSL).
+    High TP = heavy friction (suppresses XSL).
+    """
+    latency_norm  = min(1.0, bridge_latency_blocks / max_latency_ref)
+    friction      = (latency_norm * 0.40 + slippage_pct * 0.40 + failure_rate * 0.20)
+    return max(0.0, min(1.0, friction))
+
+
+def compute_xsl(
+    tv: float,
+    fs: float,
+    rr: float,
+    tp: float,
+) -> float:
+    """
+    XSL(entity, t) = TV · FS · RR / (1 + TP)
+    """
+    if tp < 0:
+        tp = 0.0
+    numerator   = tv * fs * rr
+    denominator = 1.0 + tp
+    return max(0.0, min(1.0, numerator / denominator))
+
+
+def compute_xsl_full(
+    entity_id:              str,
+    chain_behaviors:        List[CrossChainBehavior],
+    bridge_latency_blocks:  float = 10.0,
+    slippage_pct:           float = 0.005,
+    failure_rate:           float = 0.02,
+) -> dict:
+    """
+    Full XSL computation from cross-chain behavioral snapshots.
+    """
+    if len(chain_behaviors) < 2:
+        return {
+            "entity_id":   entity_id,
+            "xsl_score":   0.0,
+            "tier":        "SPECIES_ISOLATED",
+            "error":       "insufficient_cross_chain_data",
+            "chain_count": len(chain_behaviors),
+        }
+
+    total_vol    = sum(cb.volume_30d for cb in chain_behaviors)
+    avg_vol      = total_vol / len(chain_behaviors)
+    max_vol      = max(cb.volume_30d for cb in chain_behaviors)
+
+    tv = compute_tv(total_vol, avg_vol * len(chain_behaviors), max_vol)
+
+    fs_scores = []
+    for i in range(len(chain_behaviors)):
+        for j in range(i + 1, len(chain_behaviors)):
+            fs_ij = compute_fs(
+                chain_behaviors[i].behavioral_vector,
+                chain_behaviors[j].behavioral_vector,
+            )
+            fs_scores.append(fs_ij)
+    fs = sum(fs_scores) / len(fs_scores) if fs_scores else 0.50
+
+    avg_inbound  = sum(cb.inbound_recognition for cb in chain_behaviors) / len(chain_behaviors)
+    avg_outbound = sum(cb.outbound_recognition for cb in chain_behaviors) / len(chain_behaviors)
+    rr = compute_rr(avg_inbound, avg_outbound)
+
+    tp = compute_tp(bridge_latency_blocks, slippage_pct, failure_rate)
+
+    xsl = compute_xsl(tv, fs, rr, tp)
+
+    tier = (
+        "KEYSTONE_LIQUIDITY" if xsl >= XSL_KEYSTONE else
+        "BRIDGE_LIQUIDITY"   if xsl >= XSL_BRIDGE   else
+        "SPECIES_ISOLATED"
+    )
+
+    is_keystone = xsl >= XSL_KEYSTONE
+
+    return {
+        "entity_id":      entity_id,
+        "xsl_score":      round(xsl, 6),
+        "tier":           tier,
+        "is_keystone":    is_keystone,
+        "components": {
+            "TV_volume_continuity":     round(tv, 4),
+            "FS_functional_similarity": round(fs, 4),
+            "RR_reciprocal_recognition": round(rr, 4),
+            "TP_protocol_friction":     round(tp, 4),
+        },
+        "chain_count":    len(chain_behaviors),
+        "chain_ids":      [cb.chain_id for cb in chain_behaviors],
+        "total_volume":   round(total_vol, 2),
+        "f6_monitoring":  True,
+        "f6_note":        "XSL decline below BRIDGE threshold triggers 72h behavioral shift window (F6).",
+        "disclosure": (
+            f"XSL={xsl:.4f} [{tier}]. "
+            f"{'Keystone species: cross-chain liquidity connector.' if is_keystone else 'Not keystone.'} "
+            "Cross-species liquidity is a biological analogy — not a financial guarantee."
+        ),
+    }
+
+
+if __name__ == "__main__":
+    import random
+    rng = random.Random(42)
+
+    chains = [
+        CrossChainBehavior(
+            chain_id="ethereum",
+            behavioral_vector=[rng.gauss(0.7, 0.1) for _ in range(9)],
+            volume_30d=1_000_000,
+            tx_count=500,
+            unique_counterparties=120,
+            inbound_recognition=0.85,
+            outbound_recognition=0.82,
+        ),
+        CrossChainBehavior(
+            chain_id="arbitrum",
+            behavioral_vector=[rng.gauss(0.68, 0.1) for _ in range(9)],
+            volume_30d=800_000,
+            tx_count=400,
+            unique_counterparties=95,
+            inbound_recognition=0.80,
+            outbound_recognition=0.78,
+        ),
+        CrossChainBehavior(
+            chain_id="base",
+            behavioral_vector=[rng.gauss(0.72, 0.1) for _ in range(9)],
+            volume_30d=600_000,
+            tx_count=300,
+            unique_counterparties=80,
+            inbound_recognition=0.75,
+            outbound_recognition=0.77,
+        ),
+    ]
+
+    result = compute_xsl_full("0xUNISWAP_POOL", chains, bridge_latency_blocks=5, slippage_pct=0.003)
+    print(f"XSL = {result['xsl_score']:.4f} [{result['tier']}]")
+    for k, v in result['components'].items():
+        print(f"  {k}: {v:.4f}")
+    assert 0 <= result['xsl_score'] <= 1
+    print("L9.1 XSL Engine: PASS")

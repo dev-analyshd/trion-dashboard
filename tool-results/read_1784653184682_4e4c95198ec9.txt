@@ -1,0 +1,1002 @@
+     1→"""
+     2→TRION Protocol — L5.3 Consensus Degradation Tiers
+     3→
+     4→When validator count or diversity drops below thresholds,
+     5→consensus degrades through defined tiers before halting.
+     6→
+     7→Degradation tiers:
+     8→    FULL:      100+ validators, HHI < 1500, 4+ continents
+     9→    REDUCED:   33-99 validators OR HHI 1500-2500 OR 3 continents
+    10→    DEGRADED:  10-32 validators OR HHI 2500-4000 OR 2 continents
+    11→    MINIMAL:   3-9 validators (Byzantine threshold barely preserved)
+    12→    HALTED:    < 3 validators OR HHI > 4000 OR < 2 continents
+    13→
+    14→Safety guarantee: 33% Byzantine threshold must always be maintained.
+    15→At MINIMAL tier: signals emitted with HONEST DISCLOSURE of degradation.
+    16→At HALTED: no signal emission. SILENCE only with explanation.
+    17→
+    18→Living Security SEC(t) = LSS(t) · PQC(t) · CC(t)
+    19→    LSS = Living Security Score (BCK + immune system + genomic key)
+    20→    PQC = Post-Quantum Cryptography (CRYSTALS-Kyber + Dilithium + SPHINCS+)
+    21→    CC  = Coherence Continuity (anti-fragmentation)
+    22→
+    23→Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+    24→License: CC0
+    25→"""
+    26→
+    27→from __future__ import annotations
+    28→from dataclasses import dataclass
+    29→from enum import Enum
+    30→from typing import Optional
+    31→
+    32→
+    33→class ConsensusState(Enum):
+    34→    FULL     = "FULL"      # 100+ validators, full diversity
+    35→    REDUCED  = "REDUCED"   # 33-99 validators
+    36→    DEGRADED = "DEGRADED"  # 10-32 validators
+    37→    MINIMAL  = "MINIMAL"   # 3-9 validators
+    38→    HALTED   = "HALTED"    # < 3 validators
+    39→
+    40→
+    41→VALIDATOR_THRESHOLDS = {
+    42→    ConsensusState.FULL:     100,
+    43→    ConsensusState.REDUCED:  33,
+    44→    ConsensusState.DEGRADED: 10,
+    45→    ConsensusState.MINIMAL:  3,
+    46→    ConsensusState.HALTED:   0,
+    47→}
+    48→
+    49→# Signal confidence multipliers per tier
+    50→CONFIDENCE_MULTIPLIERS = {
+    51→    ConsensusState.FULL:     1.00,
+    52→    ConsensusState.REDUCED:  0.85,
+    53→    ConsensusState.DEGRADED: 0.60,
+    54→    ConsensusState.MINIMAL:  0.35,
+    55→    ConsensusState.HALTED:   0.00,
+    56→}
+    57→
+    58→
+    59→@dataclass
+    60→class ConsensusDegradationResult:
+    61→    state:                   ConsensusState
+    62→    validator_count:         int
+    63→    byzantine_threshold:     float     # 33% of effective stake — must be preserved
+    64→    byzantine_safe:          bool      # True iff no single Byzantine actor > 33%
+    65→    hhi:                     float
+    66→    continent_count:         int
+    67→    confidence_multiplier:   float
+    68→    signals_allowed:         bool
+    69→    honest_disclosure:       str
+    70→    living_security_score:   float     # SEC(t)
+    71→    f8_approaching:          bool      # HHI > 1500 and growing
+    72→
+    73→
+    74→def classify_consensus_state(
+    75→    validator_count:  int,
+    76→    hhi:             float,
+    77→    continent_count: int,
+    78→) -> ConsensusState:
+    79→    """
+    80→    Classify current consensus state.
+    81→    Most conservative tier from all three criteria.
+    82→    """
+    83→    # HHI-based tier
+    84→    if hhi > 4000:
+    85→        hhi_state = ConsensusState.HALTED
+    86→    elif hhi > 2500:
+    87→        hhi_state = ConsensusState.DEGRADED
+    88→    elif hhi > 1500:
+    89→        hhi_state = ConsensusState.REDUCED
+    90→    else:
+    91→        hhi_state = ConsensusState.FULL
+    92→
+    93→    # Count-based tier
+    94→    if validator_count < 3:
+    95→        count_state = ConsensusState.HALTED
+    96→    elif validator_count < 10:
+    97→        count_state = ConsensusState.MINIMAL
+    98→    elif validator_count < 33:
+    99→        count_state = ConsensusState.DEGRADED
+   100→    elif validator_count < 100:
+   101→        count_state = ConsensusState.REDUCED
+   102→    else:
+   103→        count_state = ConsensusState.FULL
+   104→
+   105→    # Geography-based tier
+   106→    # Spec: HALTED < 2, DEGRADED = 2, REDUCED = 3, FULL >= 4
+   107→    if continent_count < 2:
+   108→        geo_state = ConsensusState.HALTED
+   109→    elif continent_count < 3:
+   110→        geo_state = ConsensusState.DEGRADED
+   111→    elif continent_count < 4:
+   112→        geo_state = ConsensusState.REDUCED
+   113→    else:
+   114→        geo_state = ConsensusState.FULL
+   115→
+   116→    # Use most degraded tier
+   117→    tier_order = [
+   118→        ConsensusState.FULL, ConsensusState.REDUCED,
+   119→        ConsensusState.DEGRADED, ConsensusState.MINIMAL, ConsensusState.HALTED
+   120→    ]
+   121→    states = hi_state, count_state, geo_state]
+   122→    worst = max(states, key=lambda s: tier_order.index(s))
+   123→    return worst
+   124→
+   125→
+   126→def compute_living_security(
+   127→    lss: float,  # Living Security Score [0, 1]
+   128→    pqc: float,  # Post-Quantum Cryptography [0, 1]
+   129→    cc:  float,  # Coherence Continuity [0, 1]
+   130→) -> float:
+   131→    """
+   132→    SEC(t) = LSS(t) · PQC(t) · CC(t)
+   133→    All components must be healthy for SEC to be healthy.
+   134→    """
+   135→    return max(0.0, min(1.0, lss * pqc * cc))
+   136→
+   137→
+   138→def compute_consensus_degradation(
+   139→    validator_count:  int,
+   140→    hhi:             float,
+   141→    continent_count: int,
+   142→    effective_stakes: list[float],  # Effective stake per validator
+   143→    lss:             float = 0.90,
+   144→    pqc:             float = 0.95,
+   145→    cc:              float = 0.88,
+   146→) -> ConsensusDegradationResult:
+   147→    """
+   148→    Full consensus degradation assessment with safety checks.
+   149→    """
+   150→    state = classify_consensus_state(validator_count, hhi, continent_count)
+   151→
+   152→    # Byzantine safety: no single actor should exceed 33% of effective stake
+   153→    total_eff = sum(effective_stakes)
+   154→    byzantine_safe = True
+   155→    if total_eff > 0 and effective_stakes:
+   156→        max_share = max(effective_stakes) / total_eff
+   157→        byzantine_safe = max_share < 0.33
+   158→    byzantine_threshold = 0.33 * total_eff
+   159→
+   160→    confidence = CONFIDENCE_MULTIPLIERS[state]
+   161→    signals_allowed = state != ConsensusState.HALTED and byzantine_safe
+   162→
+   163→    # Build honest disclosure
+   164→    if state == ConsensusState.HALTED:
+   165→        disclosure = (
+   166→            f"HALTED: consensus impossible. "
+   167→            f"validators={validator_count} HHI={hhi:.0f} continents={continent_count}. "
+   168→            "SILENCE signal only — no valuation possible."
+   169→        )
+   170→    elif state == ConsensusState.MINIMAL:
+   171→        disclosure = (
+   172→            f"MINIMAL consensus: {validator_count} validators. "
+   173→            f"Byzantine safety {'MAINTAINED' if byzantine_safe else 'VIOLATED'}. "
+   174→            f"Signal confidence reduced to {confidence*100:.0f}%."
+   175→        )
+   176→    elif state == ConsensusState.DEGRADED:
+   177→        disclosure = (
+   178→            f"DEGRADED consensus: {validator_count} validators, HHI={hhi:.0f}. "
+   179→            f"Signal confidence {confidence*100:.0f}% of normal."
+   180→        )
+   181→    elif state == ConsensusState.REDUCED:
+   182→        disclosure = (
+   183→            f"REDUCED consensus: {validator_count} validators. "
+   184→            f"Signal confidence {confidence*100:.0f}%."
+   185→        )
+   186→    else:
+   187→        disclosure = (
+   188→            f"FULL consensus: {validator_count} validators, HHI={hhi:.0f}, "
+   189→            f"{continent_count} continents. Full signal confidence."
+   190→        )
+   191→
+   192→    sec = compute_living_security(lss, pqc, cc)
+   193→
+   194→    return ConsensusDegradationResult(
+   195→        state                 = state,
+   196→        validator_count       = validator_count,
+   197→        byzantine_threshold   = byzantine_threshold,
+   198→        byzantine_safe        = byzantine_safe,
+   199→        hhi                   = hhi,
+   200→        continent_count       = continent_count,
+   201→        confidence_multiplier = confidence,
+   202→        signals_allowed       = signals_allowed,
+   203→        honest_disclosure     = disclosure,
+   204→        living_security_score = sec,
+   205→        f8_approaching        = hhi > 1200,
+   206→    )
+   207→
+   208→
+   209→if __name__ == "__main__":
+   210→    # Full consensus
+   211→    result = compute_consensus_degradation(
+   212→        validator_count=150, hhi=800.0, continent_count=5,
+   213→        effective_stakes=[100.0] * 150,
+   214→    )
+   215→    print(f"Full: {result.state.value} confidence={result.confidence_multiplier}")
+   216→    assert result.state == ConsensusState.FULL
+   217→    assert result.signals_allowed
+   218→
+   219→    # HALTED
+   220→    result_halt = compute_consensus_degradation(
+   221→        validator_count=2, hhi=5000.0, continent_count=1,
+   222→        effective_stakes=[1000.0, 1000.0],
+   223→    )
+   224→    print(f"Halted: {result_halt.state.value} signals={result_halt.signals_allowed}")
+   225→    assert result_halt.state == ConsensusState.HALTED
+   226→    assert not result_halt.signals_allowed
+   227→
+   228→    # Living security
+   229→    sec = compute_living_security(0.90, 0.95, 0.88)
+   230→    print(f"SEC(t) = {sec:.4f}")
+   231→    assert 0 < sec < 1
+   232→
+   233→    print("L5.3 Consensus Degradation Tiers + Living Security: PASS")
+   234→===SEPARATOR===
+   235→"""
+   236→TRION Protocol — L4.5 Epigenetic Layer (Semi-Immutability)
+   237→
+   238→EL_state(t) = f(Threat_level, Validator_health, Network_entropy)
+   239→
+   240→TRION's expression changes continuously with environment.
+   241→TRION's bytecode (architecture) never changes.
+   242→
+   243→This is Semi-Immutability:
+   244→    bytecode(P, t)    = bytecode(P, t₀)         for all t > t₀
+   245→    expression(P, t)  = f(bytecode(P), EL_state(t))
+   246→
+   247→The chameleon does not become a different animal under threat.
+   248→Its DNA is unchanged. What changes is expression.
+   249→
+   250→Threat levels → expression changes:
+   251→    LOW:      increase privacy defaults
+   252→    MEDIUM:   ZK proofs become default output
+   253→    HIGH:     validator weight in hostile jurisdiction de-emphasized
+   254→    CRITICAL: signal disaggregation across neutral jurisdictions
+   255→    WEAPONIZATION: AWA_enforced → FALSE → emission FROZEN
+   256→
+   257→Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+   258→License: CC0
+   259→"""
+   260→
+   261→from __future__ import annotations
+   262→from dataclasses import dataclass
+   263→from enum import Enum
+   264→from typing import Optional
+   265→
+   266→
+   267→class ThreatLevel(Enum):
+   268→    NONE          = 0
+   269→    LOW           = 1
+   270→    MEDIUM        = 2
+   271→    HIGH          = 3
+   272→    CRITICAL      = 4
+   273→    WEAPONIZATION = 5
+   274→
+   275→
+   276→class ELExpression(Enum):
+   277→    """Current protocol expression mode — changes with threat level."""
+   278→    STANDARD            = "STANDARD"           # Normal operation
+   279→    PRIVACY_ENHANCED    = "PRIVACY_ENHANCED"   # Increased privacy defaults
+   280→    ZK_DEFAULT          = "ZK_DEFAULT"         # ZK proofs are default output
+   281→    GEOGRAPHIC_REWEIGHT = "GEOGRAPHIC_REWEIGHT" # Hostile jurisdiction de-emphasized
+   282→    DISAGGREGATED       = "DISAGGREGATED"       # Signals split across neutral jurisdictions
+   283→    FROZEN              = "FROZEN"              # AWA_enforced=FALSE → emission stopped
+   284→
+   285→
+   286→@dataclass
+   287→class ELState:
+   288→    """
+   289→    EL_state(t) = f(Threat_level, Validator_health, Network_entropy)
+   290→    """
+   291→    threat_level:            ThreatLevel
+   292→    validator_health:        float    # [0, 1] — average validator health score
+   293→    network_entropy:         float    # [0, 1] — behavioral diversity of network
+   294→    hostile_jurisdictions:   list[str]
+   295→    expression:              ELExpression
+   296→    awa_enforced:            bool
+   297→    signals_frozen:          bool
+   298→    zk_proofs_active:        bool
+   299→    geographic_rebalancing:  bool
+   300→    description:             str
+   301→
+   302→
+   303→def compute_threat_level(
+   304→    regulatory_sba_score:     float,   # L8.1 SBA — sovereign behavioral assessment
+   305→    validator_health_min:     float,   # Minimum across all validators
+   306→    hostile_jurisdiction_pct: float,   # Fraction of validators in hostile jurisdictions
+   307→    awa_violation_detected:   bool,
+   308→    network_entropy:          float,
+   309→) -> ThreatLevel:
+   310→    """
+   311→    Compute threat level from multiple behavioral inputs.
+   312→    Uses most conservative (highest threat) of all signals.
+   313→    """
+   314→    if awa_violation_detected:
+   315→        return ThreatLevel.WEAPONIZATION
+   316→
+   317→    # Low regulatory SBA + high hostile jurisdiction concentration = CRITICAL
+   318→    if regulatory_sba_score < 0.20 and hostile_jurisdiction_pct > 0.60:
+   319→        return ThreatLevel.CRITICAL
+   320→
+   321→    if regulatory_sba_score < 0.30 or hostile_jurisdiction_pct > 0.50:
+   322→        return ThreatLevel.HIGH
+   323→
+   324→    if regulatory_sba_score < 0.50 or hostile_jurisdiction_pct > 0.30:
+   325→        return ThreatLevel.MEDIUM
+   326→
+   327→    if regulatory_sba_score < 0.70 or hostile_jurisdiction_pct > 0.15:
+   328→        return ThreatLevel.LOW
+   329→
+   330→    return ThreatLevel.NONE
+   331→
+   332→
+   333→def compute_el_state(
+   334→    threat_level:            ThreatLevel,
+   335→    validator_health:        float,
+   336→    network_entropy:         float,
+   337→    hostile_jurisdictions:   list[str],
+   338→    no_single_entity_weight: bool,
+   339→    no_single_entity_select: bool,
+   340→    public_good_pct:         float,
+   341→    sovereignty_active:      bool,
+   342→    right_to_invisibility:   bool,
+   343→    gratitude_score:         float,
+   344→) -> ELState:
+   345→    """
+   346→    EL_state(t) = f(Threat_level, Validator_health, Network_entropy)
+   347→
+   348→    AWA_enforced iff all_of:
+   349→        no_single_entity_controls_signal_weights
+   350→        no_single_entity_controls_validator_selection
+   351→        Public_Good_Charter_minimum >= 15%
+   352→        Sovereignty_Dignity_Protocol_active
+   353→        Right_to_Invisibility_enforced
+   354→        Gratitude >= 1
+   355→    """
+   356→    # Check AWA conditions
+   357→    awa_enforced = all([
+   358→        no_single_entity_weight,
+   359→        no_single_entity_select,
+   360→        public_good_pct >= 0.15,
+   361→        sovereignty_active,
+   362→        right_to_invisibility,
+   363→        gratitude_score >= 1.0,
+   364→    ])
+   365→
+   366→    if not awa_enforced or threat_level == ThreatLevel.WEAPONIZATION:
+   367→        return ELState(
+   368→            threat_level            = ThreatLevel.WEAPONIZATION,
+   369→            validator_health        = validator_health,
+   370→            network_entropy         = network_entropy,
+   371→            hostile_jurisdictions   = hostile_jurisdictions,
+   372→            expression              = ELExpression.FROZEN,
+   373→            awa_enforced            = False,
+   374→            signals_frozen          = True,
+   375→            zk_proofs_active        = True,
+   376→            geographic_rebalancing  = True,
+   377→            description             = (
+   378→                "AWA VIOLATION — emission FROZEN. "
+   379→                "Cannot be overridden by any single entity. By design."
+   380→            ),
+   381→        )
+   382→
+   383→    if threat_level == ThreatLevel.CRITICAL:
+   384→        expression = ELExpression.DISAGGREGATED
+   385→        desc = (
+   386→            "CRITICAL: Signal disaggregation across neutral jurisdictions. "
+   387→            "No single jurisdiction sees complete signal. "
+   388→            "Individual user invisibility fully enforced."
+   389→        )
+   390→    elif threat_level == ThreatLevel.HIGH:
+   391→        expression = ELExpression.GEOGRAPHIC_REWEIGHT
+   392→        desc = (
+   393→            "HIGH: Validator weight in hostile jurisdictions de-emphasized. "
+   394→            "Geographic HHI rebalances automatically (algorithmic, not human decision). "
+   395→            "All outputs: jurisdiction-specific ZK only."
+   396→        )
+   397→    elif threat_level == ThreatLevel.MEDIUM:
+   398→        expression = ELExpression.ZK_DEFAULT
+   399→        desc = (
+   400→            "MEDIUM: ZK proofs become default output. "
+   401→            "Right_to_Invisibility auto-enforced in affected jurisdiction. "
+   402→            "Raw behavioral data access restricted."
+   403→        )
+   404→    elif threat_level == ThreatLevel.LOW:
+   405→        expression = ELExpression.PRIVACY_ENHANCED
+   406→        desc = (
+   407→            "LOW: Privacy defaults increased. "
+   408→            "ZK credential options surfaced to users."
+   409→        )
+   410→    else:
+   411→        expression = ELExpression.STANDARD
+   412→        desc = "NONE: Standard operation."
+   413→
+   414→    return ELState(
+   415→        threat_level            = threat_level,
+   416→        validator_health        = validator_health,
+   417→        network_entropy         = network_entropy,
+   418→        hostile_jurisdictions   = hostile_jurisdictions,
+   419→        expression              = expression,
+   420→        awa_enforced            = awa_enforced,
+   421→        signals_frozen          = False,
+   422→        zk_proofs_active        = threat_level.value >= ThreatLevel.MEDIUM.value,
+   423→        geographic_rebalancing  = threat_level.value >= ThreatLevel.HIGH.value,
+   424→        description             = desc,
+   425→    )
+   426→
+   427→
+   428→def apply_epigenetic_adjustment(
+   429→    base_value:   float,
+   430→    el_state:     ELState,
+   431→) -> tuple[float, str]:
+   432→    """
+   433→    Apply epigenetic adjustment to a signal value based on current expression.
+   434→
+   435→    In DISAGGREGATED or FROZEN mode: signals are not emitted.
+   436→    In other modes: signals may be privacy-enhanced or ZK-only.
+   437→
+   438→    Returns (adjusted_value, emission_mode).
+   439→    """
+   440→    if el_state.signals_frozen:
+   441→        return 0.0, "FROZEN"
+   442→
+   443→    if el_state.expression == ELExpression.DISAGGREGATED:
+   444→        # Values emitted as partial signals only
+   445→        return base_value * 0.70, "DISAGGREGATED_PARTIAL"
+   446→
+   447→    if el_state.expression == ELExpression.GEOGRAPHIC_REWEIGHT:
+   448→        return base_value, "ZK_ONLY"
+   449→
+   450→    if el_state.expression == ELExpression.ZK_DEFAULT:
+   451→        return base_value, "ZK_PROOF"
+   452→
+   453→    if el_state.expression == ELExpression.PRIVACY_ENHANCED:
+   454→        return base_value, "PRIVACY_ENHANCED"
+   455→
+   456→    return base_value, "STANDARD"
+   457→
+   458→
+   459→if __name__ == "__main__":
+   460→    # Healthy state
+   461→    el_healthy = compute_el_state(
+   462→        threat_level            = ThreatLevel.NONE,
+   463→        validator_health        = 0.95,
+   464→        network_entropy         = 0.80,
+   465→        hostile_jurisdictions   = [],
+   466→        no_single_entity_weight = True,
+   467→        no_single_entity_select = True,
+   468→        public_good_pct         = 0.15,
+   469→        sovereignty_active      = True,
+   470→        right_to_invisibility   = True,
+   471→        gratitude_score         = 1.10,
+   472→    )
+   473→    print(f"Healthy: expression={el_healthy.expression.value} awa={el_healthy.awa_enforced}")
+   474→    assert el_healthy.expression == ELExpression.STANDARD
+   475→    assert el_healthy.awa_enforced
+   476→
+   477→    # AWA violation
+   478→    el_frozen = compute_el_state(
+   479→        threat_level            = ThreatLevel.NONE,
+   480→        validator_health        = 0.95,
+   481→        network_entropy         = 0.80,
+   482→        hostile_jurisdictions   = ["hostile_country"],
+   483→        no_single_entity_weight = False,  # VIOLATION
+   484→        no_single_entity_select = True,
+   485→        public_good_pct         = 0.15,
+   486→        sovereignty_active      = True,
+   487→        right_to_invisibility   = True,
+   488→        gratitude_score         = 1.10,
+   489→    )
+   490→    print(f"AWA violation: frozen={el_frozen.signals_frozen}")
+   491→    assert el_frozen.signals_frozen
+   492→    assert not el_frozen.awa_enforced
+   493→
+   494→    v, mode = apply_epigenetic_adjustment(0.75, el_frozen)
+   495→    assert mode == "FROZEN" and v == 0.0
+   496→    print(f"Frozen emission: value={v} mode={mode}")
+   497→
+   498→    print("L4.5 Epigenetic Layer: PASS")
+   499→===SEPARATOR===
+   500→"""
+   501→TRION Protocol — L4.8 HHI + Geographic Enforcement
+   502→
+   503→HHI(t) = Σ_j (s_j · d_j / Σ_k s_k·d_k)² × 10000
+   504→
+   505→Where s_j · d_j = effective stake of validator j (stake × diversity weight)
+   506→
+   507→HHI Tiers (diversity enforcement):
+   508→    <1500:       HEALTHY — no action
+   509→    1500-2500:   WARNING — 2× reward multiplier for underrepresented validators
+   510→    2500-4000:   DANGER  — weight cap: no cluster > 15% effective stake
+   511→    >4000:       CRITICAL — consensus paused, governance emergency
+   512→
+   513→Geographic constraints (separate from HHI, continuous):
+   514→    max single region:         < 40% of effective stake
+   515→    max single jurisdiction:   < 30% of effective stake
+   516→    minimum continents:        >= 4
+   517→
+   518→Falsification conditions:
+   519→    F8: Falsified if HHI > 2500 sustained for 30 consecutive days without correction
+   520→    F9: Falsified if geographic coverage < 4 continents without automatic incentive
+   521→
+   522→Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+   523→License: CC0
+   524→"""
+   525→
+   526→from __future__ import annotations
+   527→from dataclasses import dataclass
+   528→from enum import Enum
+   529→from typing import Dict, List, Optional
+   530→
+   531→
+   532→class HHITier(Enum):
+   533→    HEALTHY  = "HEALTHY"
+   534→    WARNING  = "WARNING"
+   535→    DANGER   = "DANGER"
+   536→    CRITICAL = "CRITICAL"
+   537→
+   538→
+   539→HHI_THRESHOLDS = {
+   540→    HHITier.HEALTHY:  1500,
+   541→    HHITier.WARNING:  2500,
+   542→    HHITier.DANGER:   4000,
+   543→}
+   544→
+   545→MAX_SINGLE_REGION     = 0.40  # 40%
+   546→MAX_SINGLE_JURISDICTION = 0.30  # 30%
+   547→MIN_CONTINENTS        = 4
+   548→MAX_CLUSTER_SHARE     = 0.15  # 15% cap per cluster in DANGER tier
+   549→
+   550→
+   551→@dataclass
+   552→class ValidatorStake:
+   553→    """Effective stake for one validator."""
+   554→    validator_id:   str
+   555→    stake:          float
+   556→    diversity_score: float  # d_j
+   557→    effective_stake: float  # s_j · d_j
+   558→    geographic_region: str
+   559→    jurisdiction:   str
+   560→    continent:      str
+   561→
+   562→
+   563→@dataclass
+   564→class HHIResult:
+   565→    """Full HHI computation with geographic enforcement."""
+   566→    hhi:                    float
+   567→    tier:                   HHITier
+   568→    total_effective_stake:  float
+   569→    validator_count:        int
+   570→    region_shares:          Dict[str, float]    # region → share of effective stake
+   571→    jurisdiction_shares:    Dict[str, float]
+   572→    continent_count:        int
+   573→    continents:             List[str]
+   574→
+   575→    # Enforcement actions
+   576→    reward_multiplier_regions: List[str]        # Regions eligible for 2× reward
+   577→    weight_capped_validators:  List[str]        # Validators weight-capped
+   578→    consensus_paused:          bool             # CRITICAL tier
+   579→    governance_emergency:      bool
+   580→
+   581→    # F8/F9 checks
+   582→    hhi_days_above_2500:       int             # Days sustained above WARNING
+   583→    f8_violation:              bool            # HHI > 2500 for 30+ days
+   584→    f9_violation:              bool            # < 4 continents, no incentive
+   585→
+   586→    geographic_violations:     List[str]       # Regions exceeding max share
+   587→    auto_response:             str
+   588→
+   589→
+   590→def compute_hhi(validators: List[ValidatorStake]) -> tuple[float, Dict[str, float]]:
+   591→    """
+   592→    HHI(t) = Σ_j (w_j_eff / Σ_k w_k_eff)² × 10000
+   593→    where w_j_eff = s_j · d_j
+   594→    """
+   595→    total = sum(v.effective_stake for v in validators)
+   596→    if total <= 0:
+   597→        return 0.0, {}
+   598→
+   599→    weights = {}
+   600→    hhi = 0.0
+   601→    for v in validators:
+   602→        share = v.effective_stake / total
+   603→        weights[v.validator_id] = share
+   604→        hhi += share ** 2
+   605→
+   606→    return hhi * 10000, weights
+   607→
+   608→
+   609→def compute_geographic_distribution(
+   610→    validators: List[ValidatorStake],
+   611→    total_effective_stake: float,
+   612→) -> tuple[Dict[str, float], Dict[str, float], int, List[str]]:
+   613→    """Compute regional, jurisdictional, and continental distribution."""
+   614→    region_stake: Dict[str, float] = {}
+   615→    juris_stake:  Dict[str, float] = {}
+   616→    continents:   set[str]         = set()
+   617→
+   618→    for v in validators:
+   619→        region_stake[v.geographic_region] = region_stake.get(v.geographic_region, 0) + v.effective_stake
+   620→        juris_stake[v.jurisdiction]       = juris_stake.get(v.jurisdiction, 0) + v.effective_stake
+   621→        continents.add(v.continent)
+   622→
+   623→    if total_effective_stake > 0:
+   624→        region_shares = {r: s / total_effective_stake for r, s in region_stake.items()}
+   625→        juris_shares  = {j: s / total_effective_stake for j, s in juris_stake.items()}
+   626→    else:
+   627→        region_shares = {}
+   628→        juris_shares  = {}
+   629→
+   630→    return region_shares, juris_shares, len(continents), sorted(continents)
+   631→
+   632→
+   633→def compute_hhi_enforcement(
+   634→    validators:              List[ValidatorStake],
+   635→    hhi_days_above_2500:     int = 0,
+   636→    continents_have_incentive: bool = True,
+   637→) -> HHIResult:
+   638→    """
+   639→    Full HHI computation with enforcement tiers and geographic checks.
+   640→    """
+   641→    if not validators:
+   642→        return HHIResult(
+   643→            hhi=0, tier=HHITier.HEALTHY,
+   644→            total_effective_stake=0, validator_count=0,
+   645→            region_shares={}, jurisdiction_shares={},
+   646→            continent_count=0, continents=[],
+   647→            reward_multiplier_regions=[], weight_capped_validators=[],
+   648→            consensus_paused=False, governance_emergency=False,
+   649→            hhi_days_above_2500=0, f8_violation=False, f9_violation=False,
+   650→            geographic_violations=[], auto_response="no_validators",
+   651→        )
+   652→
+   653→    total_eff = sum(v.effective_stake for v in validators)
+   654→    hhi, weights = compute_hhi(validators)
+   655→    region_shares, juris_shares, continent_count, continents = compute_geographic_distribution(
+   656→        validators, total_eff
+   657→    )
+   658→
+   659→    # Classify tier
+   660→    if hhi > HHI_THRESHOLDS[HHITier.WARNING]:
+   661→        tier = HHITier.CRITICAL
+   662→    elif hhi > HHI_THRESHOLDS[HHITier.HEALTHY]:
+   663→        tier = HHITier.DANGER
+   664→    elif hhi > HHI_THRESHOLDS[HHITier.HEALTHY]:
+   665→        tier = HHITier.WARNING
+   666→    else:
+   667→        tier = HHITier.HEALTHY
+   668→
+   669→    if hhi > 4000:
+   670→        tier = HHITier.CRITICAL
+   671→    elif hhi > 2500:
+   672→        tier = HHITier.DANGER
+   673→    elif hhi > 1500:
+   674→        tier = HHITier.WARNING
+   675→    else:
+   676→        tier = HHITier.HEALTHY
+   677→
+   678→    # Geographic violations
+   679→    geo_violations = []
+   680→    for region, share in region_shares.items():
+   681→        if share > MAX_SINGLE_REGION:
+   682→            geo_violations.append(f"region:{region}:{share:.3f}>{MAX_SINGLE_REGION}")
+   683→    for juris, share in juris_shares.items():
+   684→        if share > MAX_SINGLE_JURISDICTION:
+   685→            geo_violations.append(f"juris:{juris}:{share:.3f}>{MAX_SINGLE_JURISDICTION}")
+   686→
+   687→    # Enforcement actions per tier
+   688→    reward_multiplier_regions = []
+   689→    weight_capped_validators  = []
+   690→    consensus_paused          = False
+   691→    governance_emergency      = False
+   692→    auto_response             = "no_action"
+   693→
+   694→    if tier == HHITier.CRITICAL:
+   695→        consensus_paused     = True
+   696→        governance_emergency = True
+   697→        auto_response        = "CONSENSUS_PAUSED_GOVERNANCE_EMERGENCY"
+   698→
+   699→    elif tier == HHITier.DANGER:
+   700→        # Cap: no cluster > 15% effective stake
+   701→        for v in validators:
+   702→            if weights.get(v.validator_id, 0) > MAX_CLUSTER_SHARE:
+   703→                weight_capped_validators.append(v.validator_id)
+   704→        auto_response = f"WEIGHT_CAP_{MAX_CLUSTER_SHARE*100:.0f}pct"
+   705→
+   706→    elif tier == HHITier.WARNING:
+   707→        # 2× reward multiplier for underrepresented regions
+   708→        avg_share = 1.0 / len(region_shares) if region_shares else 0
+   709→        for region, share in region_shares.items():
+   710→            if share < avg_share * 0.5:  # Significantly underrepresented
+   711→                reward_multiplier_regions.append(region)
+   712→        auto_response = "REWARD_MULTIPLIER_UNDERREPRESENTED"
+   713→
+   714→    # F8: HHI > 2500 for 30+ consecutive days
+   715→    f8_violation = (hhi > 2500) and (hhi_days_above_2500 >= 30)
+   716→
+   717→    # F9: < 4 continents without automatic corrective incentive
+   718→    f9_violation = (continent_count < MIN_CONTINENTS) and not continents_have_incentive
+   719→
+   720→    return HHIResult(
+   721→        hhi                      = hhi,
+   722→        tier                     = tier,
+   723→        total_effective_stake    = total_eff,
+   724→        validator_count          = len(validators),
+   725→        region_shares            = region_shares,
+   726→        jurisdiction_shares      = juris_shares,
+   727→        continent_count          = continent_count,
+   728→        continents               = continents,
+   729→        reward_multiplier_regions = reward_multiplier_regions,
+   730→        weight_capped_validators  = weight_capped_validators,
+   731→        consensus_paused         = consensus_paused,
+   732→        governance_emergency     = governance_emergency,
+   733→        hhi_days_above_2500      = hhi_days_above_2500,
+   734→        f8_violation             = f8_violation,
+   735→        f9_violation             = f9_violation,
+   736→        geographic_violations    = geo_violations,
+   737→        auto_response            = auto_response,
+   738→    )
+   739→
+   740→
+   741→if __name__ == "__main__":
+   742→    # Diverse validator set (HEALTHY)
+   743→    validators = [
+   744→        ValidatorStake(f"v{i}", 100.0, 0.80, 80.0,
+   745→                       f"region_{i % 8}", f"juris_{i % 6}", f"continent_{i % 5}")
+   746→        for i in range(100)
+   747→    ]
+   748→    result = compute_hhi_enforcement(validators)
+   749→    print(f"Diverse: HHI={result.hhi:.1f} tier={result.tier.value} continents={result.continent_count}")
+   750→    assert result.tier == HHITier.HEALTHY
+   751→    assert result.continent_count >= 4
+   752→    assert not result.f8_violation
+   753→
+   754→    # Concentrated validator set (CRITICAL)
+   755→    concentrated = [
+   756→        ValidatorStake(f"v{i}", 1000.0 if i < 5 else 1.0, 0.80,
+   757→                       800.0 if i < 5 else 0.8,
+   758→                       "single_region", "single_juris", "single_continent")
+   759→        for i in range(20)
+   760→    ]
+   761→    result_c = compute_hhi_enforcement(concentrated)
+   762→    print(f"Concentrated: HHI={result_c.hhi:.1f} tier={result_c.tier.value} paused={result_c.consensus_paused}")
+   763→    assert result_c.hhi > 2500
+   764→
+   765→    print("L4.8 HHI + Geographic Enforcement: PASS")
+   766→===SEPARATOR===
+   767→"""
+   768→TRION Protocol — L4.1: Spiritual Plane Σ(t)
+   769→Diversity-weighted BFT validator consensus.
+   770→
+   771→Σ(t) = Σ_j [s_j · d_j · 1(|v_j - M̄| ≤ δ(t))] / Σ_j [s_j · d_j]
+   772→d_j = 1 - corr(M_j, M̄)   (diversity weight)
+   773→δ(t) = δ_base × (1 + V(t))  (dynamic consensus window)
+   774→
+   775→HONEST DISCLOSURE: Σ at bootstrap = 0.25.
+   776→Full validator network activates at mainnet.
+   777→"""
+   778→
+   779→import numpy as np
+   780→from typing import List
+   781→from dataclasses import dataclass
+   782→
+   783→
+   784→@dataclass
+   785→class ValidatorSignal:
+   786→    validator_id:   str
+   787→    valuation:      float
+   788→    stake:          float
+   789→    model_outputs:  np.ndarray
+   790→
+   791→
+   792→def compute_diversity_weight(
+   793→    model_outputs_j: np.ndarray,
+   794→    median_outputs:  np.ndarray,
+   795→) -> float:
+   796→    if len(model_outputs_j) < 2 or len(median_outputs) < 2:
+   797→        return 1.0
+   798→    min_len = min(len(model_outputs_j), len(median_outputs))
+   799→    mj   = model_outputs_j[-min_len:]
+   800→    mbar = median_outputs[-min_len:]
+   801→    if mj.std() == 0 or mbar.std() == 0:
+   802→        return 1.0
+   803→    corr = np.corrcoef(mj, mbar)[0, 1]
+   804→    if np.isnan(corr):
+   805→        return 1.0
+   806→    return max(0.0, 1.0 - corr)
+   807→
+   808→
+   809→def compute_hhi(weights: List[float]) -> float:
+   810→    total = sum(weights)
+   811→    if total <= 0:
+   812→        return 0.0
+   813→    shares = [w / total for w in weights]
+   814→    return sum(s ** 2 for s in shares) * 10000
+   815→
+   816→
+   817→def compute_sigma(
+   818→    validators:  List[ValidatorSignal],
+   819→    volatility:  float = 0.3,
+   820→    delta_base:  float = 0.10,
+   821→) -> dict:
+   822→    if not validators:
+   823→        return {
+   824→            "sigma":          0.25,
+   825→            "bootstrap":      True,
+   826→            "validator_count": 0,
+   827→            "disclosure":     "Σ in bootstrap phase. Value: 0.25 baseline. Full validator network at mainnet.",
+   828→        }
+   829→
+   830→    delta_t = delta_base * (1.0 + volatility)
+   831→
+   832→    all_valuations   = np.array([v.valuation for v in validators])
+   833→    median_valuation = float(np.median(all_valuations))
+   834→
+   835→    max_len = max(len(v.model_outputs) for v in validators)
+   836→    padded  = [
+   837→        np.pad(v.model_outputs, (0, max_len - len(v.model_outputs)))
+   838→        for v in validators
+   839→    ]
+   840→    median_outputs = np.median(padded, axis=0)
+   841→
+   842→    effective_weights = []
+   843→    included_weights  = []
+   844→
+   845→    for v in validators:
+   846→        d_j   = compute_diversity_weight(v.model_outputs, median_outputs)
+   847→        w_eff = v.stake * d_j
+   848→        in_window = abs(v.valuation - median_valuation) <= delta_t
+   849→        effective_weights.append(w_eff)
+   850→        if in_window:
+   851→            included_weights.append(w_eff)
+   852→
+   853→    total_effective = sum(effective_weights)
+   854→    total_included  = sum(included_weights)
+   855→
+   856→    if total_effective <= 0:
+   857→        return {"sigma": 0.0, "error": "zero effective weight"}
+   858→
+   859→    sigma = total_included / total_effective
+   860→
+   861→    hhi        = compute_hhi(effective_weights)
+   862→    hhi_status = (
+   863→        "HEALTHY"  if hhi < 1500
+   864→        else "WARNING"  if hhi < 2500
+   865→        else "DANGER"   if hhi < 4000
+   866→        else "CRITICAL"
+   867→    )
+   868→
+   869→    return {
+   870→        "sigma":                 sigma,
+   871→        "bootstrap":             len(validators) < 10,
+   872→        "validator_count":       len(validators),
+   873→        "median_valuation":      median_valuation,
+   874→        "hhi":                   hhi,
+   875→        "hhi_status":            hhi_status,
+   876→        "delta_t":               delta_t,
+   877→        "total_effective_stake": total_effective,
+   878→    }
+   879→
+   880→
+   881→SIGMA_BOOTSTRAP = {
+   882→    "sigma":           0.25,
+   883→    "bootstrap":       True,
+   884→    "validator_count": 0,
+   885→    "disclosure": (
+   886→        "Σ plane operating at bootstrap baseline (0.25). "
+   887→        "Full diversity-weighted BFT validator network deploys at mainnet. "
+   888→        "See docs/architecture/bootstrap.md for timeline."
+   889→    ),
+   890→}
+   891→
+   892→
+   893→if __name__ == "__main__":
+   894→    np.random.seed(42)
+   895→    honest = [
+   896→        ValidatorSignal(
+   897→            validator_id=f"v{i}",
+   898→            valuation=0.72 + np.random.normal(0, 0.02),
+   899→            stake=float(1000 + i * 200),
+   900→            model_outputs=np.array([0.70 + j*0.005 + np.random.normal(0, 0.01)
+   901→                                    for j in range(20)])
+   902→        )
+   903→        for i in range(5)
+   904→    ]
+   905→    byzantine = [
+   906→        ValidatorSignal(
+   907→            validator_id=f"b{i}",
+   908→            valuation=0.50,
+   909→            stake=1000.0,
+   910→            model_outputs=np.ones(20) * 0.50
+   911→        )
+   912→        for i in range(5)
+   913→    ] + honest[:3]
+   914→
+   915→    r_honest = compute_sigma(honest)
+   916→    r_byz    = compute_sigma(byzantine)
+   917→
+   918→    print(f"Σ (honest):    {r_honest['sigma']:.4f}  HHI={r_honest['hhi']:.0f} ({r_honest['hhi_status']})")
+   919→    print(f"Σ (byzantine): {r_byz['sigma']:.4f}")
+   920→    print(f"Byzantine self-defeat: {r_honest['sigma'] >= r_byz['sigma']}")
+   921→    print("PHASE 11 PASS — Σ(t) diversity-weighted BFT implemented")
+   922→===SEPARATOR===
+   923→"""
+   924→TRION Protocol — L4.9 Slashing Conditions + Dispute Resolution
+   925→
+   926→Slashing conditions (from whitepaper L4.9):
+   927→
+   928→COORDINATED_ATTACK_CONFIRMED:  50% of stake. Permanent exclusion.
+   929→    Triggered: d_j → 0 over sustained period (≥ 10 blocks).
+   930→    Evidence: mathematical proof from coordination collapse theorem.
+   931→
+   932→SUSTAINED_LOW_ACCURACY:        3% per 30-day window.
+   933→    Triggered: accuracy < 40% for consecutive 30-day window.
+   934→    Evidence: rolling calibration score from IMP.
+   935→
+   936→HARDWARE_SECURITY_FAILURE:     10%.
+   937→    Triggered: HSM offline or behavioral signature mismatch.
+   938→    Evidence: HSM attestation failure.
+   939→
+   940→UPTIME_FAILURE:                0.1% per day below minimum.
+   941→    Triggered: uptime < 99.5% over 30-day window.
+   942→    Evidence: heartbeat monitoring.
+   943→
+   944→SYBIL_CLUSTER_CONFIRMED:       25% for all in cluster. Permanent exclusion.
+   945→    Triggered: entity resolution identifies validator cluster as Sybil.
+   946→    Evidence: BEO confidence > 0.95 for cluster.
+   947→
+   948→Dispute Resolution:
+   949→    72-hour window from slash proposal.
+   950→    Challenger stakes 5% of slashed amount.
+   951→    Resolution: 3 independent validators + 1 human oversight council member.
+   952→    Timeline: 7 days for full resolution.
+   953→    If upheld: challenger loses bond. Slash stands.
+   954→    If reversed: challenger receives bond back + 2× reward.
+   955→
+   956→Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+   957→License: CC0
+   958→"""
+   959→
+   960→from __future__ import annotations
+   961→import time
+   962→from dataclasses import dataclass
+   963→from enum import Enum
+   964→from typing import Optional
+   965→
+   966→
+   967→class SlashType(Enum):
+   968→    COORDINATED_ATTACK   = "COORDINATED_ATTACK_CONFIRMED"
+   969→    LOW_ACCURACY         = "SUSTAINED_LOW_ACCURACY"
+   970→    HSM_FAILURE          = "HARDWARE_SECURITY_FAILURE"
+   971→    UPTIME_FAILURE       = "UPTIME_FAILURE"
+   972→    SYBIL_CLUSTER        = "SYBIL_CLUSTER_CONFIRMED"
+   973→
+   974→
+   975→class DisputeStatus(Enum):
+   976→    PENDING    = "PENDING"
+   977→    CHALLENGED = "CHALLENGED"
+   978→    REVIEWING  = "REVIEWING"
+   979→    UPHELD     = "UPHELD"      # Slash stands
+   980→    REVERSED   = "REVERSED"    # Slash cancelled
+   981→
+   982→
+   983→# Slash percentages (basis points of stake)
+   984→SLASH_AMOUNTS_BPS: dict[SlashType, int] = {
+   985→    SlashType.COORDINATED_ATTACK:  5000,   # 50%
+   986→    SlashType.LOW_ACCURACY:         300,   # 3%
+   987→    SlashType.HSM_FAILURE:         1000,   # 10%
+   988→    SlashType.UPTIME_FAILURE:        10,   # 0.1% per day
+   989→    SlashType.SYBIL_CLUSTER:       2500,   # 25%
+   990→}
+   991→
+   992→PERMANENT_EXCLUSION: set[SlashType] = {
+   993→    SlashType.COORDINATED_ATTACK,
+   994→    SlashType.SYBIL_CLUSTER,
+   995→}
+   996→
+   997→CHALLENGE_BOND_BPS = 500    # 5% of slashed amount
+   998→DISPUTE_WINDOW_H   = 72     # 72 hours
+   999→REVIEW_PERIOD_H    = 7 * 24  # 7 days
+  1000→
+
+[showing lines 1-1000 of 1199; use offset=1001 with limit to continue reading]

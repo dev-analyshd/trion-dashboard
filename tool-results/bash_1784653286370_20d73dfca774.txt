@@ -1,0 +1,2001 @@
+===== src/thermodynamics/thermo_engine.py =====
+"""
+TRION Thermodynamic Extension
+================================
+Extends C(t) with thermodynamic potentials from statistical mechanics.
+Treats blockchain ecosystems as thermodynamic systems:
+
+  Energy (E)       = transaction fee flow (gas × price)
+  Temperature (T)  = market volatility (normalized)
+  Entropy (S)      = behavioral disorder (Shannon entropy of tx distribution)
+  Free Energy (F)  = F = E - T·S (available useful work)
+  Enthalpy (H)     = E + P·V (total system energy including "volume pressure")
+  Heat Capacity    = ΔS/ΔT (how fast entropy changes with temperature)
+  Phase Transitions = detected regime changes (gas→liquid→solid analogy)
+
+This module produces:
+  - Thermodynamic health score
+  - Free energy available for "useful work" (real productive activity)
+  - Phase state: GAS (chaotic) | LIQUID (active) | SOLID (stable) | PLASMA (exploit)
+  - Carnot efficiency: how efficiently the protocol converts energy to coherence
+  - Critical temperature: the threshold where phase transition occurs
+"""
+
+import math
+import time
+import logging
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ThermoState:
+    entity_id: str
+    timestamp: int
+    # Core thermodynamic quantities
+    energy: float           # normalized transaction energy (fee flow)
+    temperature: float      # market volatility (0=cold, 1=hot)
+    entropy: float          # behavioral disorder (0=ordered, 1=chaotic)
+    free_energy: float      # F = E - T*S (useful work potential)
+    enthalpy: float         # H = E + P*V (total system energy)
+    # Phase state
+    phase: str              # SOLID | LIQUID | GAS | PLASMA
+    phase_stability: float  # 0=unstable, 1=stable
+    # Derived
+    carnot_efficiency: float   # theoretical max efficiency
+    heat_capacity: float       # dS/dT
+    critical_temperature: float  # phase transition threshold
+    thermodynamic_health: float  # overall health score 0-1
+    gibbs_free_energy: float    # G = H - T*S (another free energy measure)
+    # Signals
+    phase_transition_risk: float    # probability of regime change
+    useful_work_fraction: float     # what fraction of energy goes to useful activity
+
+
+class ThermoEngine:
+    """
+    Computes thermodynamic properties of on-chain entities.
+    
+    Phase states (blockchain analogy):
+      SOLID  → Low activity, ordered, stable (e.g., cold storage, dormant protocol)
+      LIQUID → Active, moderately ordered, normal operation
+      GAS    → Highly active, disordered, speculative (bull market, high volatility)
+      PLASMA → Extreme disorder, exploit/crash/manipulation in progress
+    """
+
+    # Phase transition boundaries
+    TEMP_SOLID_LIQUID = 0.20    # T below this → SOLID
+    TEMP_LIQUID_GAS = 0.60      # T above this → GAS
+    TEMP_GAS_PLASMA = 0.85      # T above this → PLASMA
+
+    ENTROPY_THRESHOLD_ORDER = 0.25   # very ordered
+    ENTROPY_THRESHOLD_CHAOS = 0.75   # chaotic
+
+    def compute(self, entity_id: str, phi_vector: List[float],
+                market_volatility: float, fee_flow_normalized: float,
+                tx_count: int = 100, block_time_s: float = 13.0) -> ThermoState:
+
+        # 1. ENERGY: proportional to fee flow and tx volume
+        energy = min(1.0, fee_flow_normalized * 0.6 + (tx_count / 5000.0) * 0.4)
+
+        # 2. TEMPERATURE: market volatility
+        temperature = min(1.0, market_volatility)
+
+        # 3. ENTROPY: from phi vector Shannon diversity
+        phi = np.array(phi_vector, dtype=np.float32)
+        phi_safe = np.clip(phi, 1e-10, 1.0)
+        phi_norm = phi_safe / phi_safe.sum()
+        shannon = -float(np.sum(phi_norm * np.log2(phi_norm)))
+        max_shannon = math.log2(len(phi_norm))
+        entropy = min(1.0, shannon / (max_shannon + 1e-10))
+
+        # 4. FREE ENERGY: F = E - T*S
+        free_energy = max(0.0, energy - temperature * entropy)
+        free_energy = round(min(1.0, free_energy), 4)
+
+        # 5. PRESSURE: approximate as tx density
+        pressure = min(1.0, tx_count / 10000.0)
+
+        # 6. VOLUME: protocol "size" (approximated by phi complexity)
+        volume = float(np.mean(phi)) * 2.0
+        volume = min(1.0, volume)
+
+        # 7. ENTHALPY: H = E + P*V
+        enthalpy = min(1.0, energy + pressure * volume)
+
+        # 8. GIBBS FREE ENERGY: G = H - T*S
+        gibbs = max(0.0, min(1.0, enthalpy - temperature * entropy))
+
+        # 9. HEAT CAPACITY: dS/dT (sensitivity of entropy to temperature)
+        # Approximated from current state
+        heat_capacity = abs(entropy - temperature) * 2.0
+
+        # 10. CARNOT EFFICIENCY: 1 - T_cold/T_hot
+        # T_cold = baseline temperature (0.1), T_hot = current temperature
+        t_cold = 0.10
+        t_hot = max(t_cold + 0.01, temperature)
+        carnot_efficiency = 1.0 - (t_cold / t_hot)
+
+        # 11. USEFUL WORK FRACTION: what fraction of energy is productive
+        useful_work_fraction = free_energy / max(energy, 1e-10)
+        useful_work_fraction = round(min(1.0, useful_work_fraction), 4)
+
+        # 12. PHASE STATE
+        if temperature >= self.TEMP_GAS_PLASMA:
+            phase = "PLASMA"
+            phase_stability = 0.05
+        elif temperature >= self.TEMP_LIQUID_GAS:
+            phase = "GAS"
+            phase_stability = 0.35
+        elif temperature >= self.TEMP_SOLID_LIQUID:
+            phase = "LIQUID"
+            phase_stability = 0.75
+        else:
+            phase = "SOLID"
+            phase_stability = 0.90
+
+        # Entropy adjustment to phase stability
+        if entropy > self.ENTROPY_THRESHOLD_CHAOS:
+            phase_stability = max(0.0, phase_stability - 0.30)
+        elif entropy < self.ENTROPY_THRESHOLD_ORDER:
+            phase_stability = min(1.0, phase_stability + 0.10)
+
+        # 13. CRITICAL TEMPERATURE: phase transition threshold
+        # From Landau theory: T_c ≈ coordination_number × exchange_energy
+        critical_temperature = 0.5 + (1.0 - entropy) * 0.3
+
+        # 14. PHASE TRANSITION RISK
+        delta_T = abs(temperature - critical_temperature)
+
+---END---
+
+===== src/trading/agent_interface.py =====
+"""
+TRION AI Agent Interface
+------------------------
+The bridge between TRION behavioral signals and
+an AI trading agent's decision engine.
+
+The agent:
+  1. Receives TRIONTradeSignal from TRION API
+  2. Computes its own FAISS vector from recent market data
+  3. Compares: cosine_sim(own_view, trion_phi_vector)
+  4. Weights TRION signal by agreement score
+  5. Makes position decision
+
+This module also provides:
+  - Historical signal performance tracking
+  - Signal-to-trade mapping
+  - Portfolio context integration
+"""
+
+import numpy as np
+import time
+from dataclasses import dataclass, field
+from enum import IntEnum
+from collections import Counter
+from typing import List, Dict
+
+
+class AgentAction(IntEnum):
+    STRONG_LONG   =  2
+    LONG          =  1
+    HOLD          =  0
+    SHORT         = -1
+    STRONG_SHORT  = -2
+    WAIT          = 99
+
+
+SIGNAL_TO_ACTION_MAP: Dict[str, AgentAction] = {
+    "STRONG_BUY":         AgentAction.STRONG_LONG,
+    "BUY":                AgentAction.LONG,
+    "WEAK_BUY":           AgentAction.LONG,
+    "ACCUMULATION":       AgentAction.LONG,
+    "MOMENTUM":           AgentAction.LONG,
+    "NEUTRAL":            AgentAction.HOLD,
+    "REVERSAL_LONG":      AgentAction.STRONG_LONG,
+    "REVERSAL_SHORT":     AgentAction.STRONG_SHORT,
+    "DISTRIBUTION":       AgentAction.SHORT,
+    "WEAK_SELL":          AgentAction.SHORT,
+    "SELL":               AgentAction.SHORT,
+    "STRONG_SELL":        AgentAction.STRONG_SHORT,
+    "SILENCE":            AgentAction.WAIT,
+    "MANIPULATION_ALERT": AgentAction.WAIT,
+}
+
+
+@dataclass
+class AgentContext:
+    """Agent's own market view — what it knows from its own sources."""
+    market_price:     float
+    volume_24h:       float
+    price_change_24h: float
+    rsi_14:           float
+    volume_sma_ratio: float
+    spread_bps:       float
+    open_interest:    float = 0.0
+    funding_rate:     float = 0.0
+
+    def to_faiss_vector(self) -> np.ndarray:
+        """
+        Convert agent's market context to a 9-dim vector
+        in the same Φ feature space as TRION.
+        Allows direct cosine comparison with TRION's phi_vector.
+        """
+        f1 = min(1.0, self.volume_sma_ratio / 3.0)
+        f2 = min(1.0, abs(self.price_change_24h) * 2)
+        f3 = 1.0 - min(1.0, self.spread_bps / 100)
+        f4 = min(1.0, self.volume_24h / 1e8)
+        f5 = max(0.0, min(1.0, 0.5 + self.price_change_24h * 2))
+        f6 = min(1.0, self.open_interest / 1e7)
+        f7 = min(1.0, abs(self.funding_rate) * 100 + 0.5)
+        f8 = 1.0 - self.rsi_14 / 100
+        f9 = min(1.0, 1.0 - abs(self.funding_rate) * 10)
+        return np.array([f1, f2, f3, f4, f5, f6, f7, f8, f9])
+
+
+class TRIONAgent:
+    """
+    AI Trading Agent that uses TRION behavioral signals.
+
+    Decision logic:
+      1. Fetch TRION signal for target entity
+      2. Compute own view vector from market data
+      3. agreement = cosine_sim(own_view, trion_phi_vector)
+      4. weighted_confidence = trion_confidence × agreement
+      5. If weighted_confidence > threshold → act
+      6. Size position by confidence level
+    """
+
+    def __init__(
+        self,
+        trion_base_url:   str   = "http://127.0.0.1:8000",
+        min_confidence:   float = 0.40,
+        agreement_weight: float = 0.40,
+        trion_weight:     float = 0.60,
+    ):
+        self.trion_url        = trion_base_url
+        self.min_confidence   = min_confidence
+        self.agreement_weight = agreement_weight
+        self.trion_weight     = trion_weight
+        self._signal_history: List[dict] = []
+
+    def cosine_sim(self, v1: np.ndarray, v2: np.ndarray) -> float:
+        n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)
+        if n1 == 0 or n2 == 0:
+            return 0.0
+        return float(np.dot(v1, v2) / (n1 * n2))
+
+    def decide(
+        self,
+        trion_signal:  dict,
+        agent_context: AgentContext,
+    ) -> dict:
+        now = time.time()
+
+        if not trion_signal.get("tradeable", False):
+            reason = trion_signal.get("signal", "UNKNOWN")
+            return {
+                "action":       AgentAction.WAIT.name,
+                "action_id":    int(AgentAction.WAIT),
+                "size_pct":     0.0,
+                "reason":       f"TRION: {reason} — no action",
+                "trion_signal": trion_signal.get("signal"),
+                "confidence":   0.0,
+                "timestamp":    int(now),
+            }
+
+        phi_features = trion_signal.get("phi_features", {})
+        trion_vec = np.array([
+            phi_features.get("f1_volume_entropy",         0.5),
+            phi_features.get("f2_counterparty_diversity", 0.5),
+            phi_features.get("f3_temporal_spacing",       0.5),
+            phi_features.get("f4_contract_interaction",   0.5),
+            phi_features.get("f5_value_flow_direction",   0.5),
+            phi_features.get("f6_wallet_architecture",    0.5),
+            phi_features.get("f7_cross_protocol",         0.5),
+            phi_features.get("f8_gas_pattern",            0.5),
+            phi_features.get("f9_mev_interaction",        0.5),
+        ])
+
+        agent_vec   = agent_context.to_faiss_vector()
+        agreement   = self.cosine_sim(trion_vec, agent_vec)
+
+---END---
+
+===== src/trading/live_feed.py =====
+"""
+TRION Live Trading Signal Feed
+--------------------------------
+Continuously monitors FAISS behavioral data
+and emits trading signals every N seconds.
+
+AI agents subscribe via:
+  GET /api/v1/trading/signal/{entity_id}   — pull
+  (WebSocket push: future roadmap)
+
+This module is the daemon that:
+  1. Polls FAISS for vector changes every 30s
+  2. Recomputes pattern matches
+  3. Detects signal changes (flip from ACCUMULATION to DISTRIBUTION etc)
+  4. Logs signal history for replay
+"""
+
+import asyncio
+import httpx
+import time
+from typing import Optional
+
+
+class TRIONSignalFeed:
+
+    def __init__(
+        self,
+        faiss_url:      str  = "http://127.0.0.1:8000",
+        poll_interval:  int  = 30,
+        watch_entities: list = None,
+    ):
+        self.faiss_url    = faiss_url
+        self.interval     = poll_interval
+        self.entities     = watch_entities or []
+        self._last_signals: dict = {}
+        self._signal_log:   list = []
+
+    async def fetch_signal(self, entity_id: str) -> Optional[dict]:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    f"{self.faiss_url}/api/v1/trading/signal/{entity_id}"
+                )
+                if r.status_code == 200:
+                    return r.json()
+        except Exception:
+            pass
+        return None
+
+    def detect_flip(self, entity_id: str, new_signal: dict) -> Optional[dict]:
+        """
+        Detect when a signal flips (e.g., ACCUMULATION → DISTRIBUTION).
+        These flips are high-value events for trading agents.
+        """
+        old = self._last_signals.get(entity_id)
+        if not old:
+            return None
+        old_sig = old.get("signal")
+        new_sig = new_signal.get("signal")
+        if old_sig == new_sig:
+            return None
+
+        significant_flips = {
+            ("ACCUMULATION",  "DISTRIBUTION"):   "SMART_MONEY_EXIT",
+            ("DISTRIBUTION",  "ACCUMULATION"):   "SMART_MONEY_ENTRY",
+            ("STRONG_BUY",    "STRONG_SELL"):    "MOMENTUM_REVERSAL",
+            ("STRONG_SELL",   "STRONG_BUY"):     "CAPITULATION_BOUNCE",
+            ("MOMENTUM",      "REVERSAL_SHORT"): "TREND_EXHAUSTION",
+            ("NEUTRAL",       "ACCUMULATION"):   "ACCUMULATION_START",
+            ("NEUTRAL",       "DISTRIBUTION"):   "DISTRIBUTION_START",
+        }
+        flip_type = significant_flips.get((old_sig, new_sig), "SIGNAL_CHANGE")
+
+        return {
+            "entity_id":       entity_id,
+            "from_signal":     old_sig,
+            "to_signal":       new_sig,
+            "flip_type":       flip_type,
+            "from_confidence": old.get("confidence", 0),
+            "to_confidence":   new_signal.get("confidence", 0),
+            "timestamp":       int(time.time()),
+            "alert":           flip_type != "SIGNAL_CHANGE",
+        }
+
+    async def run_cycle(self) -> list:
+        """Run one monitoring cycle — returns any signal changes."""
+        changes = []
+        for entity_id in self.entities:
+            signal = await self.fetch_signal(entity_id)
+            if not signal:
+                continue
+            flip = self.detect_flip(entity_id, signal)
+            if flip:
+                changes.append(flip)
+                print(
+                    f"[FEED] Signal flip: {entity_id[:12]}... "
+                    f"{flip['from_signal']} → {flip['to_signal']} "
+                    f"({flip['flip_type']})"
+                )
+            self._last_signals[entity_id] = signal
+            self._signal_log.append({
+                "entity_id": entity_id,
+                "signal":    signal.get("signal"),
+                "confidence": signal.get("confidence"),
+                "timestamp": int(time.time()),
+            })
+        return changes
+
+    async def start(self):
+        """Main loop — runs continuously."""
+        print(f"[FEED] TRION Signal Feed starting")
+        print(f"[FEED] Monitoring {len(self.entities)} entities")
+        print(f"[FEED] Poll interval: {self.interval}s")
+        print(f"[FEED] API: {self.faiss_url}")
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                r = await c.get(f"{self.faiss_url}/health")
+                print(f"[FEED] FAISS health: {r.json().get('status', 'ok')}")
+        except Exception:
+            print("[FEED] Warning: FAISS not reachable — will retry")
+
+        while True:
+            try:
+                changes = await self.run_cycle()
+                if changes:
+                    print(f"[FEED] {len(changes)} signal changes detected")
+            except Exception as e:
+                print(f"[FEED] Error: {e}")
+            await asyncio.sleep(self.interval)
+
+    def get_current_signals(self) -> dict:
+        return dict(self._last_signals)
+
+    def get_recent_log(self, n: int = 50) -> list:
+        return self._signal_log[-n:]
+
+
+async def _test():
+    feed = TRIONSignalFeed(
+        watch_entities=[
+            "0xb819c63c02Ed5aB49017C0f3f2568A14624658b3",
+            "0xC3511006C04EF1d78af4C8E0e74Ec18A6E64Ff2",
+        ],
+        poll_interval=5,
+    )
+    print("[TEST] Running one feed cycle...")
+    changes = await feed.run_cycle()
+    signals = feed.get_current_signals()
+    print(f"[TEST] Signals fetched: {len(signals)}")
+    for eid, sig in signals.items():
+
+---END---
+
+===== src/trading/market_data.py =====
+"""
+TRION Market Data Connector
+----------------------------
+Fetches real-time on-chain market data to feed
+the behavioral signal engine.
+
+Sources (all public, no API key required):
+  - DeFiLlama API: TVL, protocol data
+  - Uniswap v3 subgraph: pool data, swaps
+  - CoinGecko public API: price, volume
+
+For each asset, computes:
+  - Current NL score from pool data
+  - Volume entropy from recent swaps
+  - Counterparty diversity from swap data
+"""
+
+import httpx
+import asyncio
+import time
+from typing import Optional
+
+
+async def fetch_defillama_tvl(protocol: str = "uniswap") -> dict:
+    """DeFiLlama public API — no auth required."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"https://api.llama.fi/protocol/{protocol}"
+            )
+            if r.status_code == 200:
+                data = r.json()
+                tvl_history = data.get("tvl", [])
+                if len(tvl_history) >= 2:
+                    recent = tvl_history[-1].get("totalLiquidityUSD", 0)
+                    prev   = tvl_history[-2].get("totalLiquidityUSD", 1)
+                    return {
+                        "tvl":         recent,
+                        "tvl_24h_pct": (recent - prev) / (prev + 1),
+                        "protocol":    protocol,
+                    }
+    except Exception:
+        pass
+    return {}
+
+
+async def fetch_coingecko_price(coin_id: str = "ethereum") -> dict:
+    """CoinGecko public API — basic data free."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"https://api.coingecko.com/api/v3/simple/price"
+                f"?ids={coin_id}&vs_currencies=usd"
+                f"&include_24hr_vol=true&include_24hr_change=true"
+            )
+            if r.status_code == 200:
+                data = r.json().get(coin_id, {})
+                return {
+                    "price":      data.get("usd", 0),
+                    "volume_24h": data.get("usd_24h_vol", 0),
+                    "change_24h": data.get("usd_24h_change", 0) / 100,
+                    "coin":       coin_id,
+                }
+    except Exception:
+        pass
+    return {}
+
+
+async def fetch_uniswap_pool_data(pool_address: str) -> dict:
+    """
+    Uniswap v3 subgraph — public endpoint.
+    Fetches recent swap activity for NL computation.
+    """
+    query = """
+    {
+      pool(id: "%s") {
+        token0 { symbol }
+        token1 { symbol }
+        liquidity
+        sqrtPrice
+        tick
+        volumeUSD
+        txCount
+        totalValueLockedUSD
+        feeTier
+      }
+      swaps(
+        where: { pool: "%s" }
+        orderBy: timestamp
+        orderDirection: desc
+        first: 100
+      ) {
+        amount0
+        amount1
+        amountUSD
+        origin
+        timestamp
+      }
+    }
+    """ % (pool_address.lower(), pool_address.lower())
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3",
+                json={"query": query},
+                headers={"Content-Type": "application/json"},
+            )
+            if r.status_code == 200:
+                data  = r.json().get("data", {})
+                pool  = data.get("pool", {})
+                swaps = data.get("swaps", [])
+                if pool and swaps:
+                    amounts         = [float(s.get("amountUSD", 0)) for s in swaps]
+                    origins         = [s.get("origin", "") for s in swaps]
+                    unique_traders  = len(set(origins))
+                    return {
+                        "pool_address":         pool_address,
+                        "tvl":                  float(pool.get("totalValueLockedUSD", 0)),
+                        "volume_usd":           float(pool.get("volumeUSD", 0)),
+                        "tx_count":             int(pool.get("txCount", 0)),
+                        "recent_swaps":         len(swaps),
+                        "unique_traders":       unique_traders,
+                        "avg_swap_usd":         sum(amounts) / len(amounts) if amounts else 0,
+                        "counterparty_diversity": unique_traders / max(len(swaps), 1),
+                        "token0":               pool.get("token0", {}).get("symbol", ""),
+                        "token1":               pool.get("token1", {}).get("symbol", ""),
+                    }
+    except Exception:
+        pass
+    return {}
+
+
+async def compute_live_nl_from_pool(pool_address: str) -> float:
+    """
+    Compute approximate NL score from live Uniswap pool data.
+    Full NL = LD × LO × LC × LS — this is an approximation
+    using available public data.
+    """
+    pool_data = await fetch_uniswap_pool_data(pool_address)
+    if not pool_data:
+        return 0.70
+
+    ld  = min(1.0, pool_data.get("counterparty_diversity", 0.5) * 2)
+    lo  = pool_data.get("counterparty_diversity", 0.5)
+    lc  = min(1.0, pool_data.get("tx_count", 100) / 10000)
+    tvl = pool_data.get("tvl", 1)
+    vol = pool_data.get("volume_usd", 1)
+    ls  = min(1.0, tvl / (vol * 10 + 1))
+    return max(0.01, min(1.0, ld * lo * lc * ls))
+
+---END---
+
+===== src/trading/pattern_archetypes.py =====
+"""
+TRION Trading Pattern Archetypes
+---------------------------------
+The 8 behavioral trading patterns TRION detects.
+
+Each pattern is a 9-dimensional behavioral signature:
+  [f1_volume_entropy, f2_counterparty_diversity,
+   f3_temporal_spacing, f4_contract_interaction,
+   f5_value_flow_directionality, f6_wallet_architecture,
+   f7_cross_protocol, f8_gas_pattern, f9_mev_interaction]
+
+Patterns learned from historical Akashic Index data.
+Initial values from hand-coded priors — updated as
+FAISS accumulates behavioral depth D(t).
+"""
+
+import numpy as np
+from dataclasses import dataclass
+from enum import IntEnum
+from typing import Optional
+
+
+class TradingSignal(IntEnum):
+    STRONG_BUY       = 0
+    BUY              = 1
+    WEAK_BUY         = 2
+    NEUTRAL          = 3
+    WEAK_SELL        = 4
+    SELL             = 5
+    STRONG_SELL      = 6
+    ACCUMULATION     = 7
+    DISTRIBUTION     = 8
+    REVERSAL_LONG    = 9
+    REVERSAL_SHORT   = 10
+    MOMENTUM         = 11
+
+
+@dataclass
+class PatternArchetype:
+    signal:         TradingSignal
+    name:           str
+    description:    str
+    phi_vector:     np.ndarray
+    confidence:     float
+    min_coherence:  float
+    min_depth:      float
+
+
+ARCHETYPES = [
+
+    PatternArchetype(
+        signal=TradingSignal.ACCUMULATION,
+        name="Smart Money Accumulation",
+        description=(
+            "Quiet buying with high counterparty diversity, irregular timing, "
+            "cross-protocol activity. Whale accumulating without moving price."
+        ),
+        phi_vector=np.array([
+            0.80, 0.90, 0.85, 0.75, 0.25, 0.70, 0.80, 0.60, 0.90,
+        ]),
+        confidence=0.72,
+        min_coherence=0.55,
+        min_depth=100,
+    ),
+
+    PatternArchetype(
+        signal=TradingSignal.DISTRIBUTION,
+        name="Smart Money Distribution",
+        description=(
+            "Quiet selling with high counterparty diversity, concentrated "
+            "outflow. Whale distributing without collapsing price."
+        ),
+        phi_vector=np.array([
+            0.75, 0.85, 0.80, 0.65, 0.80, 0.65, 0.70, 0.55, 0.85,
+        ]),
+        confidence=0.68,
+        min_coherence=0.55,
+        min_depth=100,
+    ),
+
+    PatternArchetype(
+        signal=TradingSignal.STRONG_BUY,
+        name="High Conviction Buy Pressure",
+        description=(
+            "Sustained buy-side pressure with high volume entropy, "
+            "behavioral continuity, low MEV. Not a bot."
+        ),
+        phi_vector=np.array([
+            0.85, 0.70, 0.65, 0.80, 0.20, 0.60, 0.75, 0.70, 0.85,
+        ]),
+        confidence=0.75,
+        min_coherence=0.60,
+        min_depth=200,
+    ),
+
+    PatternArchetype(
+        signal=TradingSignal.STRONG_SELL,
+        name="High Conviction Sell Pressure",
+        description=(
+            "Sustained sell-side pressure with concentrated outflow, "
+            "possible deleveraging pattern."
+        ),
+        phi_vector=np.array([
+            0.70, 0.60, 0.55, 0.70, 0.85, 0.55, 0.65, 0.60, 0.75,
+        ]),
+        confidence=0.71,
+        min_coherence=0.60,
+        min_depth=200,
+    ),
+
+    PatternArchetype(
+        signal=TradingSignal.REVERSAL_LONG,
+        name="Behavioral Bottom — Long Reversal",
+        description=(
+            "Capitulation pattern: low temporal entropy (panic), "
+            "concentrated outflow, MEV spike, then recovery signal."
+        ),
+        phi_vector=np.array([
+            0.45, 0.40, 0.25, 0.55, 0.90, 0.45, 0.40, 0.35, 0.20,
+        ]),
+        confidence=0.65,
+        min_coherence=0.45,
+        min_depth=300,
+    ),
+
+    PatternArchetype(
+        signal=TradingSignal.REVERSAL_SHORT,
+        name="Behavioral Top — Short Reversal",
+        description=(
+            "Euphoria pattern: retail FOMO, high uniform buys, "
+            "low counterparty diversity, MEV bots front-running."
+        ),
+        phi_vector=np.array([
+            0.50, 0.35, 0.30, 0.45, 0.15, 0.40, 0.35, 0.30, 0.25,
+        ]),
+        confidence=0.62,
+        min_coherence=0.45,
+        min_depth=300,
+    ),
+
+    PatternArchetype(
+        signal=TradingSignal.MOMENTUM,
+        name="Trend Continuation",
+        description=(
+            "Sustained directional flow with healthy counterparty diversity. "
+            "Organic trend — not manufactured."
+        ),
+        phi_vector=np.array([
+            0.75, 0.75, 0.70, 0.70, 0.35, 0.65, 0.70, 0.65, 0.80,
+        ]),
+
+---END---
+
+===== src/trading/signal_engine.py =====
+"""
+TRION Trading Signal Engine
+---------------------------
+Converts five-plane behavioral coherence into
+structured trading signals for AI agent consumption.
+
+Flow:
+  1. Fetch entity behavioral data from FAISS
+  2. Compute Φ(t) nine features
+  3. Compute C(t) five-plane coherence
+  4. Match against pattern archetypes (cosine similarity)
+  5. Apply NL liquidity filter
+  6. Apply MF manipulation filter
+  7. Emit TRIONTradeSignal
+
+Output consumed by AI agent via REST or FAISS vector comparison.
+"""
+
+import numpy as np
+import time
+import sys
+sys.path.insert(0, '.')
+
+from src.trading.pattern_archetypes import (
+    match_archetype, TradingSignal, ARCHETYPE_MATRIX, ARCHETYPES
+)
+
+
+class TradingSignalEngine:
+
+    def __init__(self, faiss_url: str = "http://127.0.0.1:8000"):
+        self.faiss_url = faiss_url
+
+    async def fetch_entity_vector(self, entity_id: str) -> dict:
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                r = await client.get(
+                    f"{self.faiss_url}/api/v1/signal/{entity_id}"
+                )
+                if r.status_code == 200:
+                    return r.json()
+        except Exception:
+            pass
+        return {}
+
+    def phi_from_faiss_vector(
+        self,
+        vector:    list,
+        magnitude: float = 0.5,
+    ) -> np.ndarray:
+        """
+        Convert a raw FAISS vector (16-dim) to the 9 Φ features.
+        FAISS stores compressed behavioral representations.
+        We project back to the interpretable 9-feature space.
+        """
+        v = np.array(vector[:16] if len(vector) >= 16 else vector)
+        projection = np.array([
+            [0.30, 0.20, 0.10, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05,
+             0.02, 0.02, 0.02, 0.01, 0.01, 0.01, 0.01],
+            [0.05, 0.30, 0.15, 0.10, 0.05, 0.05, 0.05, 0.05, 0.05,
+             0.02, 0.02, 0.02, 0.02, 0.01, 0.01, 0.00],
+            [0.05, 0.10, 0.30, 0.10, 0.10, 0.05, 0.05, 0.05, 0.05,
+             0.03, 0.03, 0.02, 0.01, 0.01, 0.00, 0.00],
+            [0.05, 0.05, 0.10, 0.30, 0.10, 0.10, 0.05, 0.05, 0.05,
+             0.03, 0.02, 0.02, 0.01, 0.01, 0.01, 0.00],
+            [0.10, 0.05, 0.05, 0.10, 0.30, 0.10, 0.10, 0.05, 0.05,
+             0.03, 0.03, 0.01, 0.01, 0.01, 0.01, 0.00],
+            [0.05, 0.05, 0.05, 0.05, 0.10, 0.30, 0.15, 0.10, 0.05,
+             0.03, 0.02, 0.02, 0.01, 0.01, 0.01, 0.00],
+            [0.05, 0.05, 0.05, 0.05, 0.05, 0.10, 0.30, 0.15, 0.10,
+             0.03, 0.02, 0.02, 0.01, 0.01, 0.01, 0.00],
+            [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.10, 0.35, 0.15,
+             0.03, 0.02, 0.02, 0.01, 0.01, 0.01, 0.00],
+            [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.10, 0.40,
+             0.05, 0.03, 0.02, 0.02, 0.01, 0.01, 0.01],
+        ])  # shape: (9, 16)
+
+        v_pad = np.zeros(16)
+        v_pad[:len(v)] = v
+        v_norm = v_pad / (np.linalg.norm(v_pad) + 1e-9)
+        phi_features = projection @ v_norm
+        phi_features = np.clip(phi_features * magnitude * 3, 0, 1)
+        return phi_features
+
+    def generate_signal(
+        self,
+        entity_id:     str,
+        phi_vector:    np.ndarray,
+        coherence:     float,
+        threshold:     float,
+        akashic_depth: float,
+        nl_score:      float = 0.75,
+        mf_score:      float = 0.0,
+        chain_id:      int   = 421614,
+        asset_address: str   = "",
+    ) -> dict:
+        now = time.time()
+
+        if coherence < threshold:
+            return {
+                "entity_id":   entity_id,
+                "signal":      "SILENCE",
+                "signal_id":   -1,
+                "confidence":  0.0,
+                "tradeable":   False,
+                "reason":      "SILENCE",
+                "silence_gap": threshold - coherence,
+                "coherence":   coherence,
+                "threshold":   threshold,
+                "explanation": (
+                    f"TRION SILENCE: C(t)={coherence:.4f} below "
+                    f"Θ(t)={threshold:.4f}. Behavioral coherence "
+                    "insufficient. Do not trade."
+                ),
+                "timestamp":   int(now),
+            }
+
+        if mf_score >= 0.70:
+            return {
+                "entity_id":   entity_id,
+                "signal":      "MANIPULATION_ALERT",
+                "signal_id":   -2,
+                "confidence":  0.0,
+                "tradeable":   False,
+                "reason":      "MANIPULATION_ALERT",
+                "mf_score":    mf_score,
+                "explanation": (
+                    f"MANIPULATION_ALERT: MF_score={mf_score:.3f}. "
+                    "Behavioral pattern indicates coordinated activity. "
+                    "Do not trade."
+                ),
+                "timestamp":   int(now),
+            }
+
+        liquidity_warning = nl_score < 0.30
+
+        pattern_result = match_archetype(phi_vector, coherence, akashic_depth)
+
+        base_confidence   = pattern_result.get("confidence", 0.0)
+        coherence_margin  = (coherence - threshold) / (1.0 - threshold + 1e-9)
+        coherence_bonus   = coherence_margin * 0.20
+        mf_discount       = mf_score * 0.50
+        liq_discount      = max(0, (0.30 - nl_score)) * 0.30
+        final_confidence  = max(0, min(1.0,
+            base_confidence + coherence_bonus - mf_discount - liq_discount
+        ))
+
+        tradeable = (
+            final_confidence >= 0.40 and
+
+---END---
+
+===== src/ubl/ubl.py =====
+"""
+TRION Universal Behavioral Language (UBL)
+==========================================
+A standardized encoding of behavioral state that allows any system
+(blockchains, AI agents, traditional finance, biological systems)
+to express and compare behavioral patterns in a common format.
+
+UBL vector = 12 dimensions:
+  [0]  phi_entropy      — physical entropy (9→1 compressed)
+  [1]  phi_complexity   — structural complexity
+  [2]  phi_flow         — directional flow energy
+  [3]  mental_score     — observer effect / attention
+  [4]  sigma_score      — network consensus
+  [5]  karma_score      — historical consistency
+  [6]  anima_score      — predictive/future coherence
+  [7]  lifecycle_stage  — 0=birth, 0.25=growth, 0.5=maturity, 0.75=decline, 1=death
+  [8]  risk_level       — 0=safe, 1=critical
+  [9]  manipulation_mf  — manipulation fingerprint score
+  [10] coherence_c      — master C(t) coherence score
+  [11] thermodynamic_f  — free energy (thermodynamic health)
+
+UBL allows:
+  - Cross-chain entity comparison
+  - AI agent behavior encoding
+  - Protocol compatibility scoring
+  - Inter-system behavioral translation
+  - Unified risk language
+"""
+
+import math
+import time
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, asdict
+import numpy as np
+
+
+@dataclass
+class UBLVector:
+    entity_id: str
+    timestamp: int
+    # 12 UBL dimensions
+    phi_entropy: float
+    phi_complexity: float
+    phi_flow: float
+    mental_score: float
+    sigma_score: float
+    karma_score: float
+    anima_score: float
+    lifecycle_stage: float    # 0=birth → 1=death
+    risk_level: float
+    manipulation_mf: float
+    coherence_c: float
+    thermodynamic_f: float
+    # Metadata
+    source_chain: str
+    source_vm: str            # EVM | SVM | PVM | TVM | MOVE | COSMOS | UTXO | AI_AGENT
+    encoding_version: str = "UBL-1.0"
+
+
+LIFECYCLE_STAGE_MAP = {
+    "BIRTH": 0.0, "GROWTH": 0.25, "MATURITY": 0.5,
+    "DECLINE": 0.75, "DEATH": 1.0
+}
+LIFECYCLE_STAGE_REVERSE = {v: k for k, v in LIFECYCLE_STAGE_MAP.items()}
+
+RISK_MAP = {"SAFE": 0.0, "LOW": 0.2, "MEDIUM": 0.45, "HIGH": 0.70, "CRITICAL": 1.0}
+
+
+class UBLEncoder:
+    """Encodes any behavioral signal into UBL format."""
+
+    def from_phi_and_planes(
+        self,
+        entity_id: str,
+        phi_vector: List[float],
+        mental: float = 0.5,
+        sigma: float = 0.5,
+        karma: float = 0.5,
+        anima: float = 0.5,
+        coherence: float = 0.5,
+        lifecycle_stage: str = "MATURITY",
+        risk_label: str = "MEDIUM",
+        manipulation_score: float = 0.0,
+        thermo_free_energy: float = 0.5,
+        source_chain: str = "unknown",
+        source_vm: str = "EVM",
+    ) -> UBLVector:
+        phi = np.array(phi_vector, dtype=np.float32)
+
+        # Compress phi to 3 summary dimensions
+        phi_entropy = float(phi[:3].mean()) if len(phi) >= 3 else 0.5
+        phi_complexity = float(phi[3:6].mean()) if len(phi) >= 6 else 0.5
+        phi_flow = float(phi[6:9].mean()) if len(phi) >= 9 else 0.5
+
+        return UBLVector(
+            entity_id=entity_id,
+            timestamp=int(time.time()),
+            phi_entropy=round(phi_entropy, 4),
+            phi_complexity=round(phi_complexity, 4),
+            phi_flow=round(phi_flow, 4),
+            mental_score=round(mental, 4),
+            sigma_score=round(sigma, 4),
+            karma_score=round(karma, 4),
+            anima_score=round(anima, 4),
+            lifecycle_stage=round(LIFECYCLE_STAGE_MAP.get(lifecycle_stage, 0.5), 4),
+            risk_level=round(RISK_MAP.get(risk_label, 0.45), 4),
+            manipulation_mf=round(manipulation_score, 4),
+            coherence_c=round(coherence, 4),
+            thermodynamic_f=round(thermo_free_energy, 4),
+            source_chain=source_chain,
+            source_vm=source_vm,
+        )
+
+    def from_ai_agent(
+        self,
+        agent_id: str,
+        fitness_score: float,
+        avg_coherence: float,
+        blocked_ratio: float,
+        trust_level: str,
+        action_diversity: float = 0.5,
+    ) -> UBLVector:
+        trust_map = {"PROBATION": 0.1, "TRUSTED": 0.5, "VERIFIED": 0.8, "EXEMPLARY": 1.0}
+        risk = 1.0 - trust_map.get(trust_level, 0.3)
+
+        return UBLVector(
+            entity_id=agent_id,
+            timestamp=int(time.time()),
+            phi_entropy=round(action_diversity, 4),
+            phi_complexity=round(fitness_score, 4),
+            phi_flow=round(avg_coherence, 4),
+            mental_score=round(trust_map.get(trust_level, 0.3), 4),
+            sigma_score=round(1.0 - blocked_ratio, 4),
+            karma_score=round(fitness_score, 4),
+            anima_score=round(avg_coherence, 4),
+            lifecycle_stage=0.25 if fitness_score > 0.5 else 0.5,
+            risk_level=round(risk, 4),
+            manipulation_mf=round(blocked_ratio, 4),
+            coherence_c=round(avg_coherence, 4),
+            thermodynamic_f=round(fitness_score, 4),
+            source_chain="agent_network",
+            source_vm="AI_AGENT",
+        )
+
+    def to_vector(self, ubl: UBLVector) -> np.ndarray:
+        return np.array([
+            ubl.phi_entropy, ubl.phi_complexity, ubl.phi_flow,
+            ubl.mental_score, ubl.sigma_score, ubl.karma_score,
+            ubl.anima_score, ubl.lifecycle_stage, ubl.risk_level,
+            ubl.manipulation_mf, ubl.coherence_c, ubl.thermodynamic_f,
+
+---END---
+
+===== src/akashic/archetypes.py =====
+"""
+TRION Akashic Index — Behavioral Archetypes
+============================================
+12 concrete behavioral archetypes, each with:
+  - Full 9-dim Phi vector (physical plane)
+  - 5-plane behavioral signature (Φ, M, Σ, K, A)
+  - Life cycle compatibility
+  - Epigenetic mutation rate
+  - CRISPR repair template
+  - Historical examples
+  - Investment signal
+
+These archetypes are the "DNA" of on-chain behavioral patterns.
+The Akashic Index stores all observed entities as distances from these archetypes.
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional
+import numpy as np
+
+
+@dataclass
+class BehavioralArchetype:
+    id: str
+    name: str
+    description: str
+
+    # 5-plane behavioral signature
+    phi_vector: List[float]        # 9-dim physical plane
+    mental_score: float            # M plane (observer effect)
+    sigma_score: float             # Σ plane (network consensus)
+    karma_score: float             # K plane (historical consistency)
+    anima_score: float             # A plane (predictive)
+
+    # Lifecycle
+    typical_lifecycle: List[str]   # expected stage sequence
+    avg_duration_days: int         # typical duration in this archetype
+    mutation_rate: float           # how fast entities leave this archetype
+
+    # Risk and signals
+    risk_level: str                # SAFE | CAUTION | DANGER | CRITICAL
+    investment_signal: str         # BUY | WATCH | AVOID | SHORT
+    investment_confidence: float
+
+    # Historical examples
+    examples: List[str]
+    known_transitions_to: List[str]  # archetypes this typically evolves into
+
+    # CRISPR repair
+    crispr_template: str           # how to nudge entity toward healthier archetype
+
+
+ARCHETYPES: List[BehavioralArchetype] = [
+
+    BehavioralArchetype(
+        id="ARCH_01",
+        name="Organic Growth",
+        description="Healthy, diverse, steady growth with broad participation and no manipulation signals.",
+        phi_vector=[0.32, 0.28, 0.38, 0.30, 0.22, 0.18, 0.34, 0.29, 0.35],
+        mental_score=0.70,
+        sigma_score=0.75,
+        karma_score=0.80,
+        anima_score=0.72,
+        typical_lifecycle=["BIRTH", "GROWTH", "MATURITY"],
+        avg_duration_days=365,
+        mutation_rate=0.15,
+        risk_level="SAFE",
+        investment_signal="BUY",
+        investment_confidence=0.78,
+        examples=["Uniswap (early)", "Aave (2021)", "Ethereum (2016-2017)"],
+        known_transitions_to=["Maturity Protocol", "Distribution"],
+        crispr_template="Maintain current trajectory. Encourage validator diversity.",
+    ),
+
+    BehavioralArchetype(
+        id="ARCH_02",
+        name="Accumulation",
+        description="Smart money quietly building positions. Low entropy, coordinated buying, below-market awareness.",
+        phi_vector=[0.45, 0.42, 0.55, 0.40, 0.62, 0.58, 0.44, 0.41, 0.54],
+        mental_score=0.55,
+        sigma_score=0.60,
+        karma_score=0.65,
+        anima_score=0.68,
+        typical_lifecycle=["BIRTH", "GROWTH"],
+        avg_duration_days=90,
+        mutation_rate=0.35,
+        risk_level="CAUTION",
+        investment_signal="BUY",
+        investment_confidence=0.65,
+        examples=["BTC (pre-2020 halving)", "ETH (pre-merge)", "many DeFi protocols pre-TVL spike"],
+        known_transitions_to=["Organic Growth", "Distribution", "Flash Exploit"],
+        crispr_template="Increase transparency. Publish tokenomics. Encourage public participation.",
+    ),
+
+    BehavioralArchetype(
+        id="ARCH_03",
+        name="Distribution",
+        description="Late-stage selling pressure. Whales reducing positions, volume high but price diverges.",
+        phi_vector=[0.68, 0.64, 0.76, 0.60, 0.72, 0.68, 0.66, 0.62, 0.74],
+        mental_score=0.40,
+        sigma_score=0.35,
+        karma_score=0.42,
+        anima_score=0.38,
+        typical_lifecycle=["MATURITY", "DECLINE"],
+        avg_duration_days=60,
+        mutation_rate=0.50,
+        risk_level="DANGER",
+        investment_signal="AVOID",
+        investment_confidence=0.72,
+        examples=["Most tokens at peak", "Terra/LUNA (weeks before collapse)", "FTX (late 2022)"],
+        known_transitions_to=["Liquidity Drain", "Death Spiral", "Recovery"],
+        crispr_template="Investigate whale wallet concentration. Audit team vesting schedules.",
+    ),
+
+    BehavioralArchetype(
+        id="ARCH_04",
+        name="Liquidity Drain",
+        description="Active removal of protocol liquidity by insiders or coordinated actors.",
+        phi_vector=[0.80, 0.75, 0.90, 0.70, 0.85, 0.80, 0.78, 0.73, 0.88],
+        mental_score=0.20,
+        sigma_score=0.18,
+        karma_score=0.15,
+        anima_score=0.12,
+        typical_lifecycle=["DECLINE", "DEATH"],
+        avg_duration_days=7,
+        mutation_rate=0.85,
+        risk_level="CRITICAL",
+        investment_signal="SHORT",
+        investment_confidence=0.90,
+        examples=["Squid Game Token", "Thodex", "Bald (Base chain)"],
+        known_transitions_to=["Death Spiral"],
+        crispr_template="EMERGENCY: Pause withdrawals. Multi-sig emergency stop. Community governance takeover.",
+    ),
+
+    BehavioralArchetype(
+        id="ARCH_05",
+        name="Flash Exploit",
+        description="Single-block or multi-block exploit execution. Extreme entropy spike, massive value drain.",
+        phi_vector=[0.96, 0.92, 0.88, 0.94, 0.04, 0.03, 0.94, 0.90, 0.96],
+        mental_score=0.05,
+        sigma_score=0.03,
+        karma_score=0.02,
+        anima_score=0.01,
+        typical_lifecycle=["DEATH"],
+        avg_duration_days=1,
+        mutation_rate=1.0,
+        risk_level="CRITICAL",
+        investment_signal="SHORT",
+        investment_confidence=0.98,
+        examples=["Euler ($197M)", "Beanstalk ($182M)", "Mango Markets ($114M)", "Ronin ($625M)"],
+
+---END---
+
+===== src/akashic/epigenetics.py =====
+"""
+TRION Epigenetic Behavioral Layer
+===================================
+Tracks HOW entity behavior changes in response to environmental pressures:
+  - Market volatility events
+  - Protocol upgrades / forks
+  - Regulatory pressure
+  - Token price shocks
+  - Governance changes
+  - Exploit events
+
+Like biological epigenetics: the underlying "DNA" (code) doesn't change,
+but expression patterns (behavioral vectors) do — and these changes persist.
+
+Key outputs:
+  - Epigenetic drift score: how far current behavior is from baseline
+  - Environmental pressure classification
+  - Methylation pattern: which behavioral features are suppressed/amplified
+  - Heritable signal: will this behavioral change persist?
+"""
+
+import time
+import math
+import json
+import os
+import sys
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, field, asdict
+import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+
+logger = __import__('logging').getLogger(__name__)
+
+def _resolve_epigenetic_store_path() -> str:
+    """
+    Persistent path for epigenetic state, resolved the same way as
+    FAISS_STATE_DB (akashic_state.db) so both survive container restarts
+    together. Previously hardcoded to /tmp, which is wiped on every
+    restart — see TRION_AUDIT_REPORT.md finding C3 (now fixed).
+    """
+    override = os.environ.get("EPIGENETIC_STORE_PATH")
+    if override:
+        return override
+    state_db = os.environ.get("FAISS_STATE_DB")
+    if state_db:
+        return os.path.join(os.path.dirname(os.path.abspath(state_db)) or ".", "trion_epigenetic_state.json")
+    # Match faiss_service.py's own fallback search order for akashic_state.db
+    for candidate_dir in (".", "akashic"):
+        if os.path.exists(os.path.join(candidate_dir, "akashic_state.db")):
+            return os.path.join(candidate_dir, "trion_epigenetic_state.json")
+    return os.path.join("akashic", "trion_epigenetic_state.json")
+
+
+EPIGENETIC_STORE_PATH = _resolve_epigenetic_store_path()
+
+
+@dataclass
+class EpigeneticState:
+    entity_id: str
+    baseline_phi: List[float]          # original behavioral vector
+    current_phi: List[float]           # current behavioral vector
+    methylation_mask: List[float]      # 0=suppressed, 1=amplified per feature
+    drift_history: List[float]         # drift over time
+    environmental_events: List[Dict]   # recorded pressures
+    last_updated: int
+    heritable_changes: List[Dict]      # persistent behavioral changes
+    epigenetic_age: float              # how much the entity has "aged" behaviorally
+
+
+@dataclass
+class EnvironmentalPressure:
+    pressure_type: str     # MARKET_CRASH | EXPLOIT | UPGRADE | REGULATORY | FORK | LIQUIDITY_SHOCK
+    magnitude: float       # 0-1 intensity
+    duration_blocks: int
+    timestamp: int
+    affected_features: List[int]  # which phi features are affected
+
+
+class EpigeneticEngine:
+    """
+    Tracks behavioral evolution of entities under environmental pressure.
+    
+    Methylation analogy:
+      - Features can be "methylated" (suppressed) or "amplified" under pressure
+      - Some changes are temporary (stress response)
+      - Some changes are heritable (permanent behavioral shift)
+    """
+
+    DRIFT_THRESHOLD_SOFT = 0.15   # soft warning
+    DRIFT_THRESHOLD_HARD = 0.35   # hard warning — significant shift
+    DRIFT_THRESHOLD_CRITICAL = 0.60  # critical — possible exploit or governance change
+
+    PRESSURE_PROFILES = {
+        "MARKET_CRASH": {
+            "affected_features": [0, 1, 6, 7],  # volume, complexity, length, timestamp
+            "methylation_mod": [-0.3, -0.2, 0.0, 0.0, 0.0, 0.0, -0.25, -0.15, 0.0],
+            "heritable_probability": 0.20,
+        },
+        "EXPLOIT": {
+            "affected_features": [0, 1, 2, 3, 4, 5, 6, 7, 8],
+            "methylation_mod": [0.5, 0.4, 0.3, 0.4, 0.6, 0.8, 0.5, 0.4, 0.5],
+            "heritable_probability": 0.90,
+        },
+        "UPGRADE": {
+            "affected_features": [2, 3, 4, 6],
+            "methylation_mod": [0.0, 0.0, 0.2, 0.15, 0.3, 0.0, 0.2, 0.0, 0.25],
+            "heritable_probability": 0.85,
+        },
+        "REGULATORY": {
+            "affected_features": [0, 1, 7],
+            "methylation_mod": [-0.2, -0.15, 0.0, 0.0, 0.0, 0.0, 0.0, -0.1, 0.0],
+            "heritable_probability": 0.60,
+        },
+        "FORK": {
+            "affected_features": [0, 2, 6],
+            "methylation_mod": [0.3, 0.0, 0.4, 0.0, 0.0, 0.0, 0.35, 0.0, 0.0],
+            "heritable_probability": 0.75,
+        },
+        "LIQUIDITY_SHOCK": {
+            "affected_features": [0, 1, 4, 5],
+            "methylation_mod": [0.4, 0.3, 0.0, 0.0, 0.5, 0.6, 0.0, 0.0, 0.0],
+            "heritable_probability": 0.45,
+        },
+    }
+
+    def __init__(self):
+        self._store: Dict[str, EpigeneticState] = {}
+        self._load_store()
+
+    def _load_store(self):
+        try:
+            if os.path.exists(EPIGENETIC_STORE_PATH):
+                with open(EPIGENETIC_STORE_PATH) as f:
+                    raw = json.load(f)
+                for eid, data in raw.items():
+                    self._store[eid] = EpigeneticState(**data)
+        except Exception:
+            pass
+
+    def _save_store(self):
+        try:
+            out = {eid: asdict(s) for eid, s in self._store.items()}
+            with open(EPIGENETIC_STORE_PATH, "w") as f:
+                json.dump(out, f)
+        except Exception:
+            pass
+
+    def _get_or_create(self, entity_id: str, phi: List[float]) -> EpigeneticState:
+        if entity_id not in self._store:
+
+---END---
+
+===== src/consensus/diversity_weighted_bft.py =====
+"""
+TRION Protocol — L4.1 / L4.2 / L4.3
+Diversity-Weighted Byzantine Fault-Tolerant Consensus
+
+Whitepaper formulas (V1.0, Level 4):
+
+L4.1 Diversity Weight:
+    d_j = 1 - corr(M_j, M̄)
+    M_j = validator j model output vector
+    M̄   = median output vector across all validators
+    High correlation → d_j → 0  (coordination is self-defeating)
+    Full independence → d_j → 1 (maximum contribution)
+
+L4.2 Spiritual Consensus Score:
+    Σ(t) = Σⱼ [sⱼ · dⱼ · 𝟙(|vⱼ − v̄| ≤ δ)] / Σⱼ [sⱼ · dⱼ]
+    sⱼ = stake weight
+    dⱼ = diversity weight
+    𝟙  = 1 if validator within consensus window δ, 0 otherwise
+    v̄  = stake-diversity-weighted mean valuation
+
+L4.3 BFT Safety Condition:
+    Safety holds iff  Σ_{honest} sⱼ · dⱼ  >  (2/3) · Σ_{all} sⱼ · dⱼ
+    Byzantine coordination → corr(M_j, M̄) → 1 → d_j → 0
+    lim_{coordination→1} Σ_{Byzantine} sⱼ · dⱼ = 0
+    Attack is structurally self-defeating.
+
+HHI Diversity Health:
+    HHI = Σⱼ (sⱼ · dⱼ / Σ_total)² × 10000
+    Healthy: HHI < 1500
+    Warning: HHI 1500–2500
+    Critical: HHI > 2500
+
+Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+License: CC0
+"""
+
+from __future__ import annotations
+
+import math
+import statistics
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+
+@dataclass
+class Validator:
+    """A single validator's state."""
+    validator_id:    str
+    stake:           float        # sⱼ — TRION stake weight
+    model_outputs:   List[float]  # Mⱼ — recent valuation output vector (rolling window)
+    valuation:       float        # vⱼ — current submitted valuation
+    model_arch:      str          # Transformer | LSTM | GNN | Hybrid
+    geography:       str          # continent
+    is_byzantine:    bool = False
+
+
+@dataclass
+class DiversityResult:
+    """Per-validator diversity computation."""
+    validator_id:      str
+    stake:             float
+    diversity_weight:  float     # dⱼ = 1 - corr(Mⱼ, M̄)
+    correlation:       float     # corr(Mⱼ, M̄)
+    effective_weight:  float     # sⱼ · dⱼ
+    within_consensus:  bool      # |vⱼ − v̄| ≤ δ
+    model_arch:        str
+    geography:         str
+
+
+@dataclass
+class BFTConsensusResult:
+    """Full DW-BFT consensus output."""
+    sigma:                   float          # Σ(t) ∈ [0,1]
+    consensus_value:         float          # v̄ stake-diversity-weighted mean
+    consensus_window:        float          # δ agreement band
+    total_effective_stake:   float          # Σⱼ sⱼ·dⱼ
+    honest_effective_stake:  float          # Σ_{within_window} sⱼ·dⱼ
+    safety_holds:            bool           # honest > (2/3) total
+    safety_margin:           float          # honest_eff - (2/3)*total_eff
+    hhi:                     float          # HHI diversity concentration index
+    hhi_health:              str            # HEALTHY / WARNING / CRITICAL
+    validator_count:         int
+    validators_in_consensus: int
+    diversity_results:       List[DiversityResult]
+    byzantine_effective_weight: float       # how much weight byzantine have
+    self_defeating_proof:    str            # formal statement
+    whitepaper_formula:      str
+
+
+def _pearson_corr(x: List[float], y: List[float]) -> float:
+    """Pearson correlation coefficient between two vectors."""
+    n = min(len(x), len(y))
+    if n < 2:
+        return 0.0
+    x, y = x[:n], y[:n]
+    mx, my = sum(x) / n, sum(y) / n
+    cov  = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y))
+    vx   = sum((xi - mx) ** 2 for xi in x)
+    vy   = sum((yi - my) ** 2 for yi in y)
+    if vx <= 0 or vy <= 0:
+        return 0.0
+    return max(-1.0, min(1.0, cov / math.sqrt(vx * vy)))
+
+
+def _median_vector(validators: List[Validator]) -> List[float]:
+    """
+    Compute element-wise median output vector M̄ across all validators.
+    Each position is the median of that position's values across all validator output vectors.
+    """
+    if not validators:
+        return []
+    n_outputs = min(len(v.model_outputs) for v in validators)
+    if n_outputs == 0:
+        return []
+    median_vec = []
+    for i in range(n_outputs):
+        vals = [v.model_outputs[i] for v in validators if i < len(v.model_outputs)]
+        median_vec.append(statistics.median(vals))
+    return median_vec
+
+
+def compute_diversity_weights(validators: List[Validator]) -> List[DiversityResult]:
+    """
+    L4.1: d_j = 1 - corr(M_j, M̄)
+
+    Builds the median model M̄ then computes each validator's correlation with it.
+    High correlation = low diversity weight = coordination is self-defeating.
+    """
+    median_vec = _median_vector(validators)
+
+    results = []
+    for v in validators:
+        if not v.model_outputs or not median_vec:
+            corr = 0.0
+        else:
+            corr = _pearson_corr(v.model_outputs, median_vec)
+
+        d_j = max(0.0, 1.0 - corr)
+        results.append(DiversityResult(
+            validator_id     = v.validator_id,
+            stake            = v.stake,
+            diversity_weight = d_j,
+            correlation      = corr,
+            effective_weight = v.stake * d_j,
+            within_consensus = False,   # set in consensus step
+            model_arch       = v.model_arch,
+            geography        = v.geography,
+        ))
+    return results
+
+
+---END---
+
+===== src/governance/sba_engine.py =====
+"""
+TRION Protocol — L8.1: Sovereign Behavioral Assessment (SBA)
+Chapter 12: Macro-Behavioral Intelligence
+
+SBA(nation, t) = w_E·E(t) + w_I·I(t) + w_S·S(t) + w_G·G(t) + w_C·C(t)
+
+Components:
+  E = Economic Behavioral Regularity
+      corr(stated_GDP_growth, onchain_economic_activity) ∈ [-1, 1] → normalized [0,1]
+  I = Institutional Integrity
+      corr(stated_policy, onchain_enforcement) — measures policy-action gap
+  S = Sovereign Signaling Credibility
+      CRED-weighted track record of sovereign signal accuracy
+  G = Geopolitical Behavioral Coherence
+      consistency of cross-border behavioral patterns
+  C = Currency Behavior Alignment
+      alignment between stated monetary policy and onchain FX/stablecoin flows
+
+Weights (whitepaper L8.1):
+  w_E=0.30, w_I=0.25, w_S=0.20, w_G=0.15, w_C=0.10   (sum=1.00)
+
+SBA ∈ [0, 1]
+  ≥ 0.75  HIGH_CREDIBILITY
+  0.55–0.75  MODERATE_CREDIBILITY
+  0.35–0.55  LOW_CREDIBILITY
+  < 0.35  BEHAVIORAL_RISK
+
+Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+License: CC0
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from typing import List, Optional
+
+W_E = 0.30
+W_I = 0.25
+W_S = 0.20
+W_G = 0.15
+W_C = 0.10
+
+assert abs(W_E + W_I + W_S + W_G + W_C - 1.0) < 1e-9, "SBA weights must sum to 1.0"
+
+SBA_HIGH       = 0.75
+SBA_MODERATE   = 0.55
+SBA_LOW        = 0.35
+
+
+def _corr_to_score(corr: float) -> float:
+    """Convert correlation [-1,1] to score [0,1]: (corr+1)/2."""
+    return max(0.0, min(1.0, (corr + 1.0) / 2.0))
+
+
+def compute_e_score(
+    stated_gdp_growth_series:   List[float],
+    onchain_activity_series:    List[float],
+) -> float:
+    """
+    E = corr(stated_GDP_growth, onchain_economic_activity), normalized [0,1].
+    High E: stated economic signals match onchain reality.
+    Low E: stated growth diverges from onchain flows (behavioral deception risk).
+    """
+    n = min(len(stated_gdp_growth_series), len(onchain_activity_series))
+    if n < 3:
+        return 0.50
+    x = stated_gdp_growth_series[-n:]
+    y = onchain_activity_series[-n:]
+    mx, my = sum(x) / n, sum(y) / n
+    num = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y))
+    dx  = math.sqrt(sum((xi - mx) ** 2 for xi in x))
+    dy  = math.sqrt(sum((yi - my) ** 2 for yi in y))
+    if dx == 0 or dy == 0:
+        return 0.50
+    corr = max(-1.0, min(1.0, num / (dx * dy)))
+    return _corr_to_score(corr)
+
+
+def compute_i_score(
+    stated_policies:        List[str],
+    onchain_enforcements:   List[float],
+    policy_alignment_scores: List[float],
+) -> float:
+    """
+    I = corr(stated_policy, onchain_enforcement)
+    Measures the gap between declared regulatory/monetary policy and
+    observed on-chain enforcement behavior.
+    policy_alignment_scores: pre-computed match scores ∈ [0,1] per policy-action pair.
+    """
+    if not policy_alignment_scores:
+        return 0.50
+    n = len(policy_alignment_scores)
+    mean_alignment = sum(policy_alignment_scores) / n
+    variance = sum((s - mean_alignment) ** 2 for s in policy_alignment_scores) / max(1, n)
+    consistency_bonus = max(0.0, 0.10 * (1.0 - math.sqrt(variance)))
+    return min(1.0, mean_alignment + consistency_bonus)
+
+
+def compute_s_score(
+    signal_accuracy_history: List[float],
+    cred_weights:            Optional[List[float]] = None,
+) -> float:
+    """
+    S = CRED-weighted track record of sovereign signal accuracy.
+    signal_accuracy_history: accuracy of past sovereign signals [0,1]
+    cred_weights: source credibility weights (default: equal)
+    """
+    if not signal_accuracy_history:
+        return 0.50
+    n = len(signal_accuracy_history)
+    if cred_weights and len(cred_weights) == n:
+        total_w = sum(cred_weights)
+        if total_w > 0:
+            return min(1.0, sum(a * w for a, w in zip(signal_accuracy_history, cred_weights)) / total_w)
+    return sum(signal_accuracy_history) / n
+
+
+def compute_g_score(
+    cross_border_flow_consistency:  float,
+    alliance_behavioral_alignment:  float,
+    geopolitical_entropy:           float,
+) -> float:
+    """
+    G = Geopolitical Behavioral Coherence.
+    cross_border_flow_consistency: how consistent cross-border crypto flows are [0,1]
+    alliance_behavioral_alignment: alignment with stated alliance behaviors [0,1]
+    geopolitical_entropy: diversity of geopolitical behaviors (low = coherent) [0,1]
+    """
+    coherence = (cross_border_flow_consistency + alliance_behavioral_alignment) / 2.0
+    entropy_penalty = geopolitical_entropy * 0.20
+    return max(0.0, min(1.0, coherence - entropy_penalty))
+
+
+def compute_c_score(
+    stated_monetary_policy_rate:  float,
+    onchain_stablecoin_flow_bias: float,
+    fx_policy_alignment:          float,
+) -> float:
+    """
+    C = Currency Behavior Alignment.
+    stated_monetary_policy_rate: tightening/easing signal [0,1] where 0=ultra-easy, 1=ultra-tight
+    onchain_stablecoin_flow_bias: net flow direction matching policy [0,1]
+    fx_policy_alignment: FX intervention vs stated policy [0,1]
+    """
+    deviation = abs(stated_monetary_policy_rate - onchain_stablecoin_flow_bias)
+    alignment = max(0.0, 1.0 - deviation)
+    c = (alignment * 0.60 + fx_policy_alignment * 0.40)
+    return max(0.0, min(1.0, c))
+
+
+---END---
+
+===== src/governance/falsifiability_registry.py =====
+"""
+TRION Protocol — Falsifiability Registry (F1–F15)
+Chapter 14.2: Falsifiability Conditions
+
+The 15 falsifiability conditions that would invalidate the TRION model.
+Each condition is tracked with its current status and monitoring data.
+
+These are NOT marketing claims — they are explicit conditions under which
+the whitepaper authors acknowledge the model would be WRONG.
+
+Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+License: CC0
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
+
+
+@dataclass
+class FalsifiabilityCondition:
+    id:          str         # F1–F15
+    description: str
+    test_metric: str
+    threshold:   str
+    status:      str         # MONITORING | PASSING | FAILING | UNTESTED
+    plane:       str         # Which whitepaper layer this tests
+    sample_size: int
+    last_check:  float
+    notes:       str
+
+
+FALSIFIABILITY_CONDITIONS: List[FalsifiabilityCondition] = [
+    FalsifiabilityCondition(
+        id="F1",
+        description="Manipulation fingerprint (MF=1.0) scores must correspond to verified oracle attack patterns in ≥95% of cases within a 10-block analysis window.",
+        test_metric="MF precision @ oracle_attack",
+        threshold="≥95% precision",
+        status="MONITORING",
+        plane="L2.1 Manipulation Fingerprint",
+        sample_size=0,
+        last_check=time.time(),
+        notes="Requires live oracle attack dataset. Bootstrap phase — insufficient confirmed attack samples.",
+    ),
+    FalsifiabilityCondition(
+        id="F2",
+        description="SILENCE events must precede 85% or more of confirmed BLOCK/REJECT events in historical backtests.",
+        test_metric="SILENCE→BLOCK precede rate",
+        threshold="≥85% over 90d backtests",
+        status="MONITORING",
+        plane="L5 Coherence Gate",
+        sample_size=0,
+        last_check=time.time(),
+        notes="Accumulating backtest data. Signal feed growing.",
+    ),
+    FalsifiabilityCondition(
+        id="F3",
+        description="C(t) < 0.55 (below minimum threshold) must predict asset underperformance vs market benchmark by >20% within 30 days.",
+        test_metric="C(t)<0.55 → underperformance rate",
+        threshold=">20% underperformance within 30d",
+        status="MONITORING",
+        plane="L5 Coherence C(t)",
+        sample_size=0,
+        last_check=time.time(),
+        notes="Requires 30-day follow-up data on SILENCE signals. Currently monitoring.",
+    ),
+    FalsifiabilityCondition(
+        id="F4",
+        description="ANIMA signals with CA>0.8 must show 90-day calibration accuracy ≥75%.",
+        test_metric="ANIMA CA>0.8 calibration score",
+        threshold="≥75% calibration over 90d",
+        status="MONITORING",
+        plane="L3.3 ANIMA A(t)",
+        sample_size=0,
+        last_check=time.time(),
+        notes="ANIMA at bootstrap (D_minimum=10,000 not reached in testnet phase). CA calibration tracking active.",
+    ),
+    FalsifiabilityCondition(
+        id="F5",
+        description="BRT window predictions must exceed random baseline by >15% over a 90-day sample period.",
+        test_metric="BRT vs random baseline improvement",
+        threshold=">15% improvement over 90d",
+        status="CONJECTURE",
+        plane="L6.2 Biological Rhythm Timer",
+        sample_size=0,
+        last_check=time.time(),
+        notes="BRT labeled CONJECTURE until this condition validated. 90-day sample not yet complete.",
+    ),
+    FalsifiabilityCondition(
+        id="F6",
+        description="XSL decline detection must trigger within 72h of confirmed on-chain behavioral shift events.",
+        test_metric="XSL decline detection latency",
+        threshold="Detection within 72h",
+        status="MONITORING",
+        plane="L9.1 Cross-Species Liquidity",
+        sample_size=0,
+        last_check=time.time(),
+        notes="XSL engine active. F6 validation requires confirmed behavioral shift ground truth.",
+    ),
+    FalsifiabilityCondition(
+        id="F7",
+        description="Source credibility (CRED) scores must converge to true prediction accuracy within 180 days of continuous operation.",
+        test_metric="CRED vs realized accuracy correlation",
+        threshold="corr(CRED, accuracy) > 0.70 at 180d",
+        status="MONITORING",
+        plane="L3.4 Source Credibility",
+        sample_size=0,
+        last_check=time.time(),
+        notes="CRED decay active (α=0.99/day). Convergence tracking requires 180-day window.",
+    ),
+    FalsifiabilityCondition(
+        id="F8",
+        description="Genomic key evolution must produce distinct (non-colliding) signatures for each generation with probability ≥1-2^(-128).",
+        test_metric="GK collision rate",
+        threshold="collision_rate < 2^-128",
+        status="PASSING",
+        plane="L4.3 Genomic Key",
+        sample_size=10000,
+        last_check=time.time(),
+        notes="SHA3-256 based GK evolution provides 256-bit collision resistance. Formal: PASSING.",
+    ),
+    FalsifiabilityCondition(
+        id="F9",
+        description="Information conservation must hold within 1e-6 tolerance at every Akashic Index append operation.",
+        test_metric="Conservation deviation",
+        threshold="deviation < 1e-6 per operation",
+        status="PASSING",
+        plane="L9.2 Information Conservation",
+        sample_size=10000,
+        last_check=time.time(),
+        notes="AkashicConservationLedger enforces conservation at every BH append. "
+              "Verified in unit test suite (test_information_conservation, test_stress.py). "
+              "10,000 operations confirmed; all within 1e-6 tolerance. PASSING.",
+    ),
+    FalsifiabilityCondition(
+        id="F10",
+        description="SBA(nation) predictions must show ≥70% alignment with sovereign credit spread movements over 90-day windows.",
+        test_metric="SBA vs credit spread alignment",
+        threshold="≥70% alignment over 90d",
+        status="MONITORING",
+        plane="L8.1 Sovereign Behavioral Assessment",
+        sample_size=0,
+        last_check=time.time(),
+        notes="SBA engine active. Credit spread ground truth requires external data feed.",
+    ),
+    FalsifiabilityCondition(
+        id="F11",
+        description="NL<0.30 signals must correlate with actual LP withdrawal events within 7 days at ≥80% recall.",
+
+---END---
+
+===== src/governance/slashing.py =====
+"""
+TRION Protocol — L4.9: Slashing Engine + 7-Step Dispute Resolution
+Whitepaper Chapter 14: Governance Architecture — Validator Accountability
+
+Five Slashing Conditions:
+  S1. Double-signing:           slash 50% of stake, permanent ban
+  S2. Prolonged offline (>72h): slash 5% of stake, temp suspension
+  S3. False signal submission:  slash 20% of stake, probation 30d
+  S4. Manipulation collusion:   slash 100% of stake, permanent ban
+  S5. Geographic constraint violation: slash 10% of stake, 7-day suspension
+
+Seven-Step Dispute Resolution Flow:
+  Step 1: Accusation filed (any validator or protocol)
+  Step 2: Evidence window (48h for accused to submit counter-evidence)
+  Step 3: Quorum check (≥2/3 of non-accused validator stake must vote)
+  Step 4: Vote (binary: GUILTY/INNOCENT)
+  Step 5: HHI check (vote HHI must be < 4000 — no governance capture)
+  Step 6: Slashing execution (if GUILTY + HHI_ok)
+  Step 7: Appeal window (7 days, requires new evidence, one appeal per case)
+
+Slashing is irreversible once Step 6 executes (semi-immutability principle).
+Appeal can only reduce slash amount by up to 50%, not reverse guilt finding.
+
+Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+License: CC0
+"""
+
+from __future__ import annotations
+
+import hashlib
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Dict, List, Optional
+
+
+# ── Slashing Conditions ───────────────────────────────────────────────────────
+
+class SlashingCondition(str, Enum):
+    DOUBLE_SIGNING             = "S1_DOUBLE_SIGNING"
+    PROLONGED_OFFLINE          = "S2_PROLONGED_OFFLINE"
+    FALSE_SIGNAL_SUBMISSION    = "S3_FALSE_SIGNAL_SUBMISSION"
+    MANIPULATION_COLLUSION     = "S4_MANIPULATION_COLLUSION"
+    GEO_CONSTRAINT_VIOLATION   = "S5_GEO_CONSTRAINT_VIOLATION"
+
+
+SLASH_PARAMETERS: Dict[SlashingCondition, dict] = {
+    SlashingCondition.DOUBLE_SIGNING: {
+        "stake_fraction":   0.50,
+        "permanent_ban":    True,
+        "suspension_days":  None,
+        "probation_days":   None,
+        "description":      "Validator signed two conflicting blocks at the same height.",
+        "severity":         "CRITICAL",
+    },
+    SlashingCondition.PROLONGED_OFFLINE: {
+        "stake_fraction":   0.05,
+        "permanent_ban":    False,
+        "suspension_days":  7,
+        "probation_days":   None,
+        "description":      "Validator offline > 72h without authorized maintenance window.",
+        "severity":         "LOW",
+    },
+    SlashingCondition.FALSE_SIGNAL_SUBMISSION: {
+        "stake_fraction":   0.20,
+        "permanent_ban":    False,
+        "suspension_days":  None,
+        "probation_days":   30,
+        "description":      "Validator submitted signal that was later falsified with evidence.",
+        "severity":         "HIGH",
+    },
+    SlashingCondition.MANIPULATION_COLLUSION: {
+        "stake_fraction":   1.00,
+        "permanent_ban":    True,
+        "suspension_days":  None,
+        "probation_days":   None,
+        "description":      "Validator participated in coordinated manipulation of TRION outputs.",
+        "severity":         "CRITICAL",
+    },
+    SlashingCondition.GEO_CONSTRAINT_VIOLATION: {
+        "stake_fraction":   0.10,
+        "permanent_ban":    False,
+        "suspension_days":  7,
+        "probation_days":   None,
+        "description":      "Validator violated L4.8 geographic distribution constraints.",
+        "severity":         "MEDIUM",
+    },
+}
+
+
+# ── Dispute Resolution States ─────────────────────────────────────────────────
+
+class DisputeState(str, Enum):
+    STEP_1_ACCUSATION   = "STEP_1_ACCUSATION"
+    STEP_2_EVIDENCE     = "STEP_2_EVIDENCE"
+    STEP_3_QUORUM_CHECK = "STEP_3_QUORUM_CHECK"
+    STEP_4_VOTING       = "STEP_4_VOTING"
+    STEP_5_HHI_CHECK    = "STEP_5_HHI_CHECK"
+    STEP_6_EXECUTION    = "STEP_6_EXECUTION"
+    STEP_7_APPEAL       = "STEP_7_APPEAL"
+    RESOLVED_GUILTY     = "RESOLVED_GUILTY"
+    RESOLVED_INNOCENT   = "RESOLVED_INNOCENT"
+    APPEAL_GRANTED      = "APPEAL_GRANTED"
+
+
+@dataclass
+class SlashingEvent:
+    """A completed slashing execution."""
+    case_id:            str
+    validator_id:       str
+    condition:          SlashingCondition
+    stake_slashed:      float       # Absolute amount slashed
+    stake_remaining:    float       # Remaining stake after slash
+    slash_fraction:     float       # Fraction of stake slashed
+    permanent_ban:      bool
+    suspension_until:   Optional[float]   # Unix timestamp
+    probation_until:    Optional[float]   # Unix timestamp
+    executed_at:        float
+    evidence_hash:      str         # SHA3-256 of evidence submitted
+    appeal_eligible:    bool
+    appeal_deadline:    float       # 7 days after execution
+
+
+@dataclass
+class DisputeCase:
+    """A dispute case tracking all 7 steps."""
+    case_id:            str
+    accused_id:         str
+    accuser_id:         str
+    condition:          SlashingCondition
+    state:              DisputeState
+    created_at:         float
+    evidence_deadline:  float       # 48h after creation
+    evidence_submitted: List[str]   # Evidence hash list
+    votes_guilty:       float       # Total stake-weight voting GUILTY
+    votes_innocent:     float       # Total stake-weight voting INNOCENT
+    vote_hhi:           float       # HHI of voting stake (must be < 4000)
+    total_eligible_stake: float
+    quorum_reached:     bool
+    hhi_ok:             bool
+    slashing_event:     Optional[SlashingEvent] = None
+    appeal_evidence:    Optional[str] = None
+    resolution_notes:   str = ""
+    has_been_appealed:  bool = False
+
+
+# ── Dispute Resolution Engine ─────────────────────────────────────────────────
+
+class SlashingEngine:
+    """
+
+---END---

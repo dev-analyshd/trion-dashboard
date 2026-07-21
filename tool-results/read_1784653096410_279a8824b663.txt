@@ -1,0 +1,740 @@
+   501→            assert(caller == self.owner.read(), 'TRION: unauthorized');
+   502→            let old_owner = self.owner.read();
+   503→            self.owner.write(new_owner);
+   504→            self.emit(OwnershipTransferred { previous_owner: old_owner, new_owner });
+   505→        }
+   506→
+   507→        fn get_score_count(self: @ContractState) -> u64 {
+   508→            self.score_count.read()
+   509→        }
+   510→
+   511→        fn get_last_updated(self: @ContractState, beo_id: felt252) -> u64 {
+   512→            self.scores.read(beo_id).last_updated
+   513→        }
+   514→    }
+   515→}
+   516→
+   517→// ─── BEOAttestation interface ────────────────────────────────
+   518→
+   519→#[starknet::interface]
+   520→pub trait IBEOAttestation<TContractState> {
+   521→    fn attest(
+   522→        ref self: TContractState,
+   523→        wallet: starknet::ContractAddress,
+   524→        beo_id: felt252,
+   525→        tier: u8,
+   526→        genesis_confidence_bp: u64,
+   527→    );
+   528→    fn revoke(ref self: TContractState, wallet: starknet::ContractAddress);
+   529→    fn get_beo(self: @TContractState, wallet: starknet::ContractAddress) -> BEOIdentity;
+   530→    fn get_wallet(self: @TContractState, beo_id: felt252) -> starknet::ContractAddress;
+   531→    fn is_attested(self: @TContractState, wallet: starknet::ContractAddress) -> bool;
+   532→    fn get_attester(self: @TContractState) -> starknet::ContractAddress;
+   533→    fn set_attester(ref self: TContractState, new_attester: starknet::ContractAddress);
+   534→    fn total_attestations(self: @TContractState) -> u64;
+   535→}
+   536→
+   537→// ─── BEOAttestation contract ─────────────────────────────────
+   538→//
+   539→// Binds Starknet wallet addresses to TRION BEO identity fingerprints
+   540→// and credibility tiers. Compatible with native AA (Argent/Braavos).
+   541→
+   542→#[starknet::contract]
+   543→pub mod BEOAttestation {
+   544→    use super::{BEOIdentity, IBEOAttestation};
+   545→    use starknet::{
+   546→        ContractAddress, get_caller_address, get_block_timestamp,
+   547→        storage::{
+   548→            Map, StorageMapReadAccess, StorageMapWriteAccess,
+   549→            StoragePointerReadAccess, StoragePointerWriteAccess,
+   550→        },
+   551→    };
+   552→
+   553→    #[storage]
+   554→    struct Storage {
+   555→        attester: ContractAddress,
+   556→        wallet_to_beo: Map<ContractAddress, BEOIdentity>,
+   557→        beo_to_wallet: Map<felt252, ContractAddress>,
+   558→        total: u64,
+   559→    }
+   560→
+   561→    #[event]
+   562→    #[derive(Drop, starknet::Event)]
+   563→    pub enum Event {
+   564→        Attested: Attested,
+   565→        Revoked: Revoked,
+   566→        AttesterChanged: AttesterChanged,
+   567→    }
+   568→
+   569→    #[derive(Drop, starknet::Event)]
+   570→    pub struct Attested {
+   571→        #[key]
+   572→        pub wallet: ContractAddress,
+   573→        #[key]
+   574→        pub beo_id: felt252,
+   575→        pub tier: u8,
+   576→        pub genesis_confidence_bp: u64,
+   577→        pub timestamp: u64,
+   578→    }
+   579→
+   580→    #[derive(Drop, starknet::Event)]
+   581→    pub struct Revoked {
+   582→        #[key]
+   583→        pub wallet: ContractAddress,
+   584→        pub beo_id: felt252,
+   585→        pub timestamp: u64,
+   586→    }
+   587→
+   588→    #[derive(Drop, starknet::Event)]
+   589→    pub struct AttesterChanged {
+   590→        pub old_attester: ContractAddress,
+   591→        pub new_attester: ContractAddress,
+   592→    }
+   593→
+   594→    #[constructor]
+   595→    fn constructor(ref self: ContractState, attester: ContractAddress) {
+   596→        self.attester.write(attester);
+   597→        self.total.write(0);
+   598→    }
+   599→
+   600→    #[abi(embed_v0)]
+   601→    impl BEOAttestationImpl of IBEOAttestation<ContractState> {
+   602→        fn attest(
+   603→            ref self: ContractState,
+   604→            wallet: ContractAddress,
+   605→            beo_id: felt252,
+   606→            tier: u8,
+   607→            genesis_confidence_bp: u64,
+   608→        ) {
+   609→            let caller = get_caller_address();
+   610→            assert(caller == self.attester.read(), 'BEO: unauthorized attester');
+   611→            assert(tier <= 2_u8, 'BEO: invalid tier');
+   612→            assert(genesis_confidence_bp <= 10000_u64, 'BEO: gc_bp out of range');
+   613→
+   614→            let ts = get_block_timestamp();
+   615→            let was_active = self.wallet_to_beo.read(wallet).active;
+   616→
+   617→            let identity = BEOIdentity {
+   618→                beo_id,
+   619→                tier,
+   620→                genesis_confidence_bp,
+   621→                attested_at: ts,
+   622→                active: true,
+   623→            };
+   624→
+   625→            self.wallet_to_beo.write(wallet, identity);
+   626→            self.beo_to_wallet.write(beo_id, wallet);
+   627→
+   628→            if !was_active {
+   629→                let current = self.total.read();
+   630→                self.total.write(current + 1);
+   631→            }
+   632→
+   633→            self.emit(Attested { wallet, beo_id, tier, genesis_confidence_bp, timestamp: ts });
+   634→        }
+   635→
+   636→        fn revoke(ref self: ContractState, wallet: ContractAddress) {
+   637→            let caller = get_caller_address();
+   638→            assert(caller == self.attester.read(), 'BEO: unauthorized attester');
+   639→
+   640→            let existing = self.wallet_to_beo.read(wallet);
+   641→            assert(existing.active, 'BEO: not attested');
+   642→
+   643→            let ts = get_block_timestamp();
+   644→            let beo_id = existing.beo_id;
+   645→
+   646→            let revoked = BEOIdentity {
+   647→                beo_id: existing.beo_id,
+   648→                tier: existing.tier,
+   649→                genesis_confidence_bp: existing.genesis_confidence_bp,
+   650→                attested_at: existing.attested_at,
+   651→                active: false,
+   652→            };
+   653→            self.wallet_to_beo.write(wallet, revoked);
+   654→            self.emit(Revoked { wallet, beo_id, timestamp: ts });
+   655→        }
+   656→
+   657→        fn get_beo(self: @ContractState, wallet: ContractAddress) -> BEOIdentity {
+   658→            self.wallet_to_beo.read(wallet)
+   659→        }
+   660→
+   661→        fn get_wallet(self: @ContractState, beo_id: felt252) -> ContractAddress {
+   662→            self.beo_to_wallet.read(beo_id)
+   663→        }
+   664→
+   665→        fn is_attested(self: @ContractState, wallet: ContractAddress) -> bool {
+   666→            self.wallet_to_beo.read(wallet).active
+   667→        }
+   668→
+   669→        fn get_attester(self: @ContractState) -> ContractAddress {
+   670→            self.attester.read()
+   671→        }
+   672→
+   673→        fn set_attester(ref self: ContractState, new_attester: ContractAddress) {
+   674→            let caller = get_caller_address();
+   675→            assert(caller == self.attester.read(), 'BEO: unauthorized attester');
+   676→            let old = self.attester.read();
+   677→            self.attester.write(new_attester);
+   678→            self.emit(AttesterChanged { old_attester: old, new_attester });
+   679→        }
+   680→
+   681→        fn total_attestations(self: @ContractState) -> u64 {
+   682→            self.total.read()
+   683→        }
+   684→    }
+   685→}
+   686→
+   687→// ─── BTCFiGuard interface ─────────────────────────────────────────────────
+   688→//
+   689→// Composable anti-sybil module for BTCFi protocols.
+   690→// Call assess_risk(beo_id) before accepting BTC collateral deposits.
+   691→//
+   692→// Risk tiers: 0=SAFE, 1=CAUTION, 2=HIGH_RISK, 3=HOSTILE
+   693→
+   694→#[starknet::interface]
+   695→pub trait IBTCFiGuard<TContractState> {
+   696→    /// Primary integration point: returns 0=SAFE, 1=CAUTION, 2=HIGH_RISK, 3=HOSTILE
+   697→    fn assess_risk(self: @TContractState, beo_id: felt252) -> u8;
+   698→    /// Batch assessment for multiple BEO IDs.
+   699→    fn batch_assess(self: @TContractState, beo_ids: Span<felt252>) -> Array<u8>;
+   700→    /// Direct tier computation without oracle lookup.
+   701→    fn score_to_tier(
+   702→        self: @TContractState,
+   703→        anima_score: u64,
+   704→        trajectory_alert: u8,
+   705→        genesis_confidence: u64,
+   706→    ) -> u8;
+   707→    /// Current safe threshold setting (protocols should reject > threshold).
+   708→    fn get_safe_threshold(self: @TContractState) -> u8;
+   709→    fn set_safe_threshold(ref self: TContractState, threshold: u8);
+   710→    fn get_oracle(self: @TContractState) -> starknet::ContractAddress;
+   711→    fn set_oracle(ref self: TContractState, oracle: starknet::ContractAddress);
+   712→    fn get_owner(self: @TContractState) -> starknet::ContractAddress;
+   713→    fn transfer_ownership(ref self: TContractState, new_owner: starknet::ContractAddress);
+   714→}
+   715→
+   716→// ─── BTCFiGuard contract ──────────────────────────────────────────────────
+   717→//
+   718→// Deployed once; any BTCFi protocol integrates via the IBTCFiGuard interface.
+   719→// Uses ITRIONOracle (cross-contract call) for live behavioral scores.
+   720→
+   721→#[starknet::contract]
+   722→pub mod BTCFiGuard {
+   723→    use super::{IBTCFiGuard, ITRIONOracleDispatcher, ITRIONOracleDispatcherTrait};
+   724→    use starknet::{
+   725→        ContractAddress, get_caller_address,
+   726→        storage::{StoragePointerReadAccess, StoragePointerWriteAccess},
+   727→    };
+   728→
+   729→    // Risk tier constants
+   730→    const SAFE: u8       = 0_u8;
+   731→    const CAUTION: u8    = 1_u8;
+   732→    const HIGH_RISK: u8  = 2_u8;
+   733→    const HOSTILE: u8    = 3_u8;
+   734→
+   735→    // Scoring thresholds (scores are ×10000)
+   736→    const SAFE_ANIMA_MIN: u64    = 5500_u64;
+   737→    const SAFE_GC_MIN: u64       = 4000_u64;
+   738→    const CAUTION_ANIMA_MIN: u64 = 2500_u64;
+   739→    const CAUTION_GC_MIN: u64    = 1500_u64;
+   740→
+   741→    // Trajectory alert levels
+   742→    const ALERT_WARN: u8         = 1_u8;
+   743→    const ALERT_MANIPULATION: u8 = 2_u8;
+   744→
+   745→    #[storage]
+   746→    struct Storage {
+   747→        owner: ContractAddress,
+   748→        oracle: ContractAddress,
+   749→        safe_threshold: u8,
+   750→    }
+   751→
+   752→    #[event]
+   753→    #[derive(Drop, starknet::Event)]
+   754→    pub enum Event {
+   755→        OracleUpdated: OracleUpdated,
+   756→        ThresholdUpdated: ThresholdUpdated,
+   757→        OwnershipTransferred: OwnershipTransferred,
+   758→    }
+   759→
+   760→    #[derive(Drop, starknet::Event)]
+   761→    pub struct OracleUpdated {
+   762→        pub old_oracle: ContractAddress,
+   763→        pub new_oracle: ContractAddress,
+   764→    }
+   765→
+   766→    #[derive(Drop, starknet::Event)]
+   767→    pub struct ThresholdUpdated {
+   768→        pub old_threshold: u8,
+   769→        pub new_threshold: u8,
+   770→    }
+   771→
+   772→    #[derive(Drop, starknet::Event)]
+   773→    pub struct OwnershipTransferred {
+   774→        pub previous_owner: ContractAddress,
+   775→        pub new_owner: ContractAddress,
+   776→    }
+   777→
+   778→    #[constructor]
+   779→    fn constructor(
+   780→        ref self: ContractState,
+   781→        owner: ContractAddress,
+   782→        oracle: ContractAddress,
+   783→    ) {
+   784→        self.owner.write(owner);
+   785→        self.oracle.write(oracle);
+   786→        self.safe_threshold.write(CAUTION);
+   787→    }
+   788→
+   789→    #[generate_trait]
+   790→    impl InternalImpl of InternalTrait {
+   791→        fn compute_tier(
+   792→            anima_score: u64,
+   793→            trajectory_alert: u8,
+   794→            genesis_confidence: u64,
+   795→            update_count: u64,
+   796→        ) -> u8 {
+   797→            // HOSTILE: active TRION manipulation signal
+   798→            if trajectory_alert == ALERT_MANIPULATION {
+   799→                return HOSTILE;
+   800→            }
+   801→            // HIGH_RISK: no behavioral history on-chain
+   802→            if update_count == 0 {
+   803→                return HIGH_RISK;
+   804→            }
+   805→            // HIGH_RISK: extremely weak scores
+   806→            if anima_score < CAUTION_ANIMA_MIN && genesis_confidence < CAUTION_GC_MIN {
+   807→                return HIGH_RISK;
+   808→            }
+   809→            // CAUTION: partial history or warning
+   810→            if trajectory_alert == ALERT_WARN
+   811→                || anima_score < SAFE_ANIMA_MIN
+   812→                || genesis_confidence < SAFE_GC_MIN {
+   813→                return CAUTION;
+   814→            }
+   815→            SAFE
+   816→        }
+   817→    }
+   818→
+   819→    #[abi(embed_v0)]
+   820→    impl BTCFiGuardImpl of IBTCFiGuard<ContractState> {
+   821→        fn assess_risk(self: @ContractState, beo_id: felt252) -> u8 {
+   822→            let oracle = ITRIONOracleDispatcher { contract_address: self.oracle.read() };
+   823→            let score = oracle.get_score(beo_id);
+   824→            InternalImpl::compute_tier(
+   825→                score.anima_score,
+   826→                score.trajectory_alert,
+   827→                score.genesis_confidence,
+   828→                score.update_count,
+   829→            )
+   830→        }
+   831→
+   832→        fn batch_assess(self: @ContractState, beo_ids: Span<felt252>) -> Array<u8> {
+   833→            let oracle = ITRIONOracleDispatcher { contract_address: self.oracle.read() };
+   834→            let mut results: Array<u8> = ArrayTrait::new();
+   835→            let mut i: usize = 0;
+   836→            loop {
+   837→                if i >= beo_ids.len() { break; }
+   838→                let beo_id = *beo_ids.at(i);
+   839→                let score = oracle.get_score(beo_id);
+   840→                results.append(
+   841→                    InternalImpl::compute_tier(
+   842→                        score.anima_score,
+   843→                        score.trajectory_alert,
+   844→                        score.genesis_confidence,
+   845→                        score.update_count,
+   846→                    )
+   847→                );
+   848→                i += 1;
+   849→            };
+   850→            results
+   851→        }
+   852→
+   853→        fn score_to_tier(
+   854→            self: @ContractState,
+   855→            anima_score: u64,
+   856→            trajectory_alert: u8,
+   857→            genesis_confidence: u64,
+   858→        ) -> u8 {
+   859→            InternalImpl::compute_tier(anima_score, trajectory_alert, genesis_confidence, 1)
+   860→        }
+   861→
+   862→        fn get_safe_threshold(self: @ContractState) -> u8 {
+   863→            self.safe_threshold.read()
+   864→        }
+   865→
+   866→        fn set_safe_threshold(ref self: ContractState, threshold: u8) {
+   867→            let caller = get_caller_address();
+   868→            assert(caller == self.owner.read(), 'BTCFi: unauthorized');
+   869→            assert(threshold <= 2_u8, 'BTCFi: threshold must be 0-2');
+   870→            let old = self.safe_threshold.read();
+   871→            self.safe_threshold.write(threshold);
+   872→            self.emit(ThresholdUpdated { old_threshold: old, new_threshold: threshold });
+   873→        }
+   874→
+   875→        fn get_oracle(self: @ContractState) -> ContractAddress {
+   876→            self.oracle.read()
+   877→        }
+   878→
+   879→        fn set_oracle(ref self: ContractState, oracle: ContractAddress) {
+   880→            let caller = get_caller_address();
+   881→            assert(caller == self.owner.read(), 'BTCFi: unauthorized');
+   882→            let old = self.oracle.read();
+   883→            self.oracle.write(oracle);
+   884→            self.emit(OracleUpdated { old_oracle: old, new_oracle: oracle });
+   885→        }
+   886→
+   887→        fn get_owner(self: @ContractState) -> ContractAddress {
+   888→            self.owner.read()
+   889→        }
+   890→
+   891→        fn transfer_ownership(ref self: ContractState, new_owner: ContractAddress) {
+   892→            let caller = get_caller_address();
+   893→            assert(caller == self.owner.read(), 'BTCFi: unauthorized');
+   894→            let old = self.owner.read();
+   895→            self.owner.write(new_owner);
+   896→            self.emit(OwnershipTransferred { previous_owner: old, new_owner });
+   897→        }
+   898→    }
+   899→}
+   900→
+   901→=== END chains/starknet/src/lib.cairo ===
+   902→
+   903→=== chains/starknet/src/oracle-bridge.ts ===
+   904→/**
+   905→ * TRION Oracle Bridge
+   906→ * Run: pnpm --filter @workspace/starknet-trion bridge
+   907→ *
+   908→ * Continuously polls the TRION FAISS service for top active entities,
+   909→ * converts their scores to on-chain format, and pushes them to the
+   910→ * TRIONOracle contract on Starknet Sepolia.
+   911→ *
+   912→ * Score encoding:
+   913→ *   anima_score         → multiply by 10000, round to u64
+   914→ *   genesis_confidence  → multiply by 10000, round to u64
+   915→ *   akashic_depth       → integer part only, as u64
+   916→ *   trajectory_alert    → 0=CLEAR, 1=WARN, 2=MANIPULATION
+   917→ *   dormancy_type       → felt252 encoded short string
+   918→ */
+   919→import 'dotenv/config';
+   920→import axios from 'axios';
+   921→import { Contract, shortString, Provider } from 'starknet';
+   922→import { getWorkingProvider, getAccount } from './provider.js';
+   923→import { STARKNET_CONFIG, TRAJECTORY_ALERT } from './config.js';
+   924→import { TRION_ORACLE_ABI } from './abi/TRIONOracle.js';
+   925→
+   926→const POLL_INTERVAL_MS = 60_000;
+   927→const KNOWN_ENTITIES   = [
+   928→  'NETWORK',
+   929→  '0x0000000000000000000000000000000000000001',
+   930→];
+   931→
+   932→interface FAISSTrajectory {
+   933→  entity_id: string;
+   934→  alert: string;
+   935→  kl_divergence: number | null;
+   936→  archetype_id: number;
+   937→  genesis_locked: boolean;
+   938→  status: string;
+   939→}
+   940→
+   941→interface FAISSResurrection {
+   942→  entity_id: string;
+   943→  beo_id: string;
+   944→  dormancy_type: string;
+   945→  is_resurrection: boolean;
+   946→  delta_score: number;
+   947→  confidence: number;
+   948→  status: string;
+   949→}
+   950→
+   951→function encodeTrajectoryAlert(alert: string): number {
+   952→  if (alert === 'MANIPULATION_ALERT') return TRAJECTORY_ALERT.MANIPULATION;
+   953→  if (alert === 'WARN')               return TRAJECTORY_ALERT.WARN;
+   954→  return TRAJECTORY_ALERT.CLEAR;
+   955→}
+   956→
+   957→function encodeDormancyType(dt: string): bigint {
+   958→  const safe = (dt ?? 'UNKNOWN').slice(0, 31);
+   959→  return BigInt(shortString.encodeShortString(safe));
+   960→}
+   961→
+   962→function scaleScore(val: number | null | undefined, scale = 10000): bigint {
+   963→  if (val === null || val === undefined || isNaN(val)) return 0n;
+   964→  return BigInt(Math.round(Math.min(1, Math.max(0, val)) * scale));
+   965→}
+   966→
+   967→async function fetchEntityScores(entityId: string) {
+   968→  const faissBase = STARKNET_CONFIG.trion.faissBaseUrl;
+   969→
+   970→  const [trajRes, resRes] = await Promise.allSettled([
+   971→    axios.get<FAISSTrajectory>(`${faissBase}/api/v1/trajectory_anomaly/${entityId}`, { timeout: 8000 }),
+   972→    axios.get<FAISSResurrection>(`${faissBase}/api/v1/resurrection_status/${entityId}`, { timeout: 8000 }),
+   973→  ]);
+   974→
+   975→  const traj = trajRes.status === 'fulfilled' ? trajRes.value.data : null;
+   976→  const res  = resRes.status  === 'fulfilled' ? resRes.value.data  : null;
+   977→
+   978→  return { traj, res };
+   979→}
+   980→
+   981→async function pushScore(
+   982→  contract: Contract,
+   983→  entityId: string,
+   984→  beoId: string,
+   985→  traj: FAISSTrajectory | null,
+   986→  res: FAISSResurrection | null,
+   987→) {
+   988→  const animaScore        = scaleScore(res?.confidence);
+   989→  const genesisConfidence = scaleScore(res?.delta_score);
+   990→  const trajectoryAlert   = encodeTrajectoryAlert(traj?.alert ?? 'CLEAR');
+   991→  const archetypeId       = BigInt(Math.max(0, Math.min(63, traj?.archetype_id ?? 0)));
+   992→  const akashicDepth      = scaleScore(res?.delta_score ?? 0, 1);
+   993→  const isResurrection    = res?.is_resurrection ?? false;
+   994→  const dormancyType      = encodeDormancyType(res?.dormancy_type ?? 'UNKNOWN');
+   995→
+   996→  const beoBigInt = BigInt('0x' + beoId.slice(0, 31));
+   997→
+   998→  console.log(`  Pushing score for ${entityId}:`);
+   999→  console.log(`    BEO:          0x${beoId.slice(0, 16)}...`);
+  1000→  console.log(`    ANIMA:        ${animaScore} / 10000`);
+  1001→  console.log(`    Genesis Conf: ${genesisConfidence} / 10000`);
+  1002→  console.log(`    Alert:        ${trajectoryAlert} (${traj?.alert ?? 'CLEAR'})`);
+  1003→  console.log(`    Archetype:    #${archetypeId}`);
+  1004→  console.log(`    Resurrection: ${isResurrection}`);
+  1005→
+  1006→  const tx = await contract.update_score(
+  1007→    beoBigInt,
+  1008→    animaScore,
+  1009→    genesisConfidence,
+  1010→    trajectoryAlert,
+  1011→    archetypeId,
+  1012→    akashicDepth,
+  1013→    isResurrection,
+  1014→    dormancyType,
+  1015→  );
+  1016→
+  1017→  console.log(`    ✓ Tx: ${tx.transaction_hash}`);
+  1018→  console.log(`      ${STARKNET_CONFIG.explorer.voyager}/tx/${tx.transaction_hash}`);
+  1019→
+  1020→  const provider = contract.providerOrAccount as Provider;
+  1021→  if (provider && typeof (provider as any).waitForTransaction === 'function') {
+  1022→    process.stdout.write('    Waiting for tx acceptance...');
+  1023→    await (provider as any).waitForTransaction(tx.transaction_hash, { retryInterval: 3000 });
+  1024→    process.stdout.write(' confirmed.\n');
+  1025→  }
+  1026→  return tx;
+  1027→}
+  1028→
+  1029→async function runBridgeCycle(contract: Contract) {
+  1030→  console.log(`\n[${new Date().toISOString()}] Running bridge cycle — ${KNOWN_ENTITIES.length} entities`);
+  1031→
+  1032→  for (const entityId of KNOWN_ENTITIES) {
+  1033→    try {
+  1034→      const { traj, res } = await fetchEntityScores(entityId);
+  1035→
+  1036→      if (!res?.beo_id) {
+  1037→        console.log(`  Skipping ${entityId}: no BEO ID`);
+  1038→        continue;
+  1039→      }
+  1040→
+  1041→      await pushScore(contract, entityId, res.beo_id, traj, res);
+  1042→    } catch (e) {
+  1043→      console.error(`  ✗ Failed to push ${entityId}:`, (e as Error).message);
+  1044→    }
+  1045→  }
+  1046→}
+  1047→
+  1048→async function main() {
+  1049→  console.log('═══════════════════════════════════════════════════════════');
+  1050→  console.log('   TRION Oracle Bridge — Starknet Sepolia                  ');
+  1051→  console.log('═══════════════════════════════════════════════════════════\n');
+  1052→
+  1053→  const oracleAddress = STARKNET_CONFIG.contracts.TRIONOracle;
+  1054→  if (!oracleAddress) {
+  1055→    throw new Error(
+  1056→      'TRION_ORACLE_ADDRESS not set.\n' +
+  1057→      'Run deploy.ts first, then set the address as a Replit Secret.'
+  1058→    );
+  1059→  }
+  1060→
+  1061→  const provider = await getWorkingProvider();
+  1062→  const account  = getAccount(provider);
+  1063→
+  1064→  console.log(`Oracle contract: ${oracleAddress}`);
+  1065→  console.log(`Pusher account:  ${account.address}\n`);
+  1066→
+  1067→  const contract = new Contract({ abi: TRION_ORACLE_ABI, address: oracleAddress, providerOrAccount: account });
+  1068→
+  1069→  console.log('Checking current score count...');
+  1070→  try {
+  1071→    const count = await contract.get_score_count();
+  1072→    console.log(`Scores on-chain: ${count}`);
+  1073→  } catch (e) {
+  1074→    console.warn('Could not read score count:', (e as Error).message);
+  1075→  }
+  1076→
+  1077→  await runBridgeCycle(contract);
+  1078→
+  1079→  console.log(`\nStarting polling loop (every ${POLL_INTERVAL_MS / 1000}s)...`);
+  1080→  setInterval(() => runBridgeCycle(contract), POLL_INTERVAL_MS);
+  1081→}
+  1082→
+  1083→main().catch(e => {
+  1084→  console.error('\n✗ Bridge failed:', e.message);
+  1085→  console.error(e.stack);
+  1086→  process.exit(1);
+  1087→});
+  1088→
+  1089→=== END chains/starknet/src/oracle-bridge.ts ===
+  1090→
+  1091→=== chains/starknet/src/provider.ts ===
+  1092→import { RpcProvider, Account, ec, hash, CallData } from 'starknet';
+  1093→import { STARKNET_CONFIG } from './config.js';
+  1094→
+  1095→// All known Starknet Sepolia account class hashes
+  1096→const KNOWN_CLASS_HASHES: Record<string, { ch: string; buildCalldata: (pub: string) => string[]; salt: (pub: string) => string }> = {
+  1097→  'Argent X V3': {
+  1098→    ch: '0x036078334509b514626504edc9fb252328d1a240e4e948bef8d0c08dff45927f',
+  1099→    buildCalldata: (pub) => CallData.compile({ owner: pub, guardian: '0x0' }),
+  1100→    salt: (pub) => pub,
+  1101→  },
+  1102→  'Argent X V4': {
+  1103→    ch: '0x029927c8af6bccf3f6fda035981e765a7bdbf18a2dc0d630494f8758aa908e2b',
+  1104→    buildCalldata: (pub) => CallData.compile({ owner: pub, guardian: '0x0' }),
+  1105→    salt: (pub) => pub,
+  1106→  },
+  1107→  'Argent X V3 (salt=0)': {
+  1108→    ch: '0x036078334509b514626504edc9fb252328d1a240e4e948bef8d0c08dff45927f',
+  1109→    buildCalldata: (pub) => CallData.compile({ owner: pub, guardian: '0x0' }),
+  1110→    salt: () => '0x0',
+  1111→  },
+  1112→  'OpenZeppelin 0.6': {
+  1113→    ch: '0x061dac032f228abef9c6626f995015233097ae253a7f72d68552db02f2971b8f',
+  1114→    buildCalldata: (pub) => CallData.compile({ publicKey: pub }),
+  1115→    salt: (pub) => pub,
+  1116→  },
+  1117→  'OpenZeppelin 0.7': {
+  1118→    ch: '0x04ad3c1dc8413453db314497945b6903e1c766495a1e60492d44d33b5a1f3c0',
+  1119→    buildCalldata: (pub) => CallData.compile({ publicKey: pub }),
+  1120→    salt: (pub) => pub,
+  1121→  },
+  1122→  'OpenZeppelin 0.6 (salt=0)': {
+  1123→    ch: '0x061dac032f228abef9c6626f995015233097ae253a7f72d68552db02f2971b8f',
+  1124→    buildCalldata: (pub) => CallData.compile({ publicKey: pub }),
+  1125→    salt: () => '0x0',
+  1126→  },
+  1127→};
+  1128→
+  1129→export async function getWorkingProvider(): Promise<RpcProvider> {
+  1130→  // Probe each endpoint with BOTH a chainId check AND a real getBlockWithTxs call.
+  1131→  // Some providers (e.g. drpc.org) advertise the right chainId but return
+  1132→  // -32601 "method does not exist" for starknet_getBlockWithTxs — that breaks
+  1133→  // the indexer hot loop. We must reject those endpoints up-front.
+  1134→  for (const url of STARKNET_CONFIG.rpcEndpoints) {
+  1135→    try {
+  1136→      const provider = new RpcProvider({ nodeUrl: url });
+  1137→      const chainId = await provider.getChainId();
+  1138→      if (chainId !== STARKNET_CONFIG.chainIdHex) continue;
+  1139→      // Probe getBlockWithTxs against latest block — must succeed.
+  1140→      const latest = await provider.getBlockNumber();
+  1141→      await provider.getBlockWithTxs(latest);
+  1142→      console.log(`✓ Connected to Starknet Mainnet via ${url}`);
+  1143→      console.log(`  Chain ID: ${chainId} (SN_MAIN), latest block: ${latest}`);
+  1144→      return provider;
+  1145→    } catch (e: any) {
+  1146→      const msg = e?.message ?? String(e);
+  1147→      console.log(`  · RPC ${url} rejected: ${msg.slice(0, 120)}`);
+  1148→    }
+  1149→  }
+  1150→  throw new Error('All Starknet Mainnet RPC endpoints failed (none support getBlockWithTxs)');
+  1151→}
+  1152→
+  1153→// starknet.js v9 Account constructor requires an options object
+  1154→export function getAccount(provider: RpcProvider): Account {
+  1155→  const privateKey = process.env.STARKNET_PRIVATE_KEY;
+  1156→  const address    = process.env.STARKNET_ACCOUNT_ADDRESS;
+  1157→
+  1158→  if (!privateKey || !address) {
+  1159→    throw new Error('Missing STARKNET_PRIVATE_KEY or STARKNET_ACCOUNT_ADDRESS');
+  1160→  }
+  1161→
+  1162→  return new Account({ provider, address, signer: privateKey } as any);
+  1163→}
+  1164→
+  1165→export async function printAccountInfo(account: Account, provider: RpcProvider): Promise<{ ethFloat: number; strkFloat: number; deployed: boolean }> {
+  1166→  const ETH  = '0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7';
+  1167→  const STRK = '0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d';
+  1168→
+  1169→  let ethFloat = 0, strkFloat = 0;
+  1170→  try {
+  1171→    const b = await provider.callContract({ contractAddress: ETH, entrypoint: 'balanceOf', calldata: [account.address] });
+  1172→    ethFloat = Number(BigInt(b[0]) + BigInt(b[1]) * (2n ** 128n)) / 1e18;
+  1173→  } catch {}
+  1174→  try {
+  1175→    const b = await provider.callContract({ contractAddress: STRK, entrypoint: 'balanceOf', calldata: [account.address] });
+  1176→    strkFloat = Number(BigInt(b[0]) + BigInt(b[1]) * (2n ** 128n)) / 1e18;
+  1177→  } catch {}
+  1178→
+  1179→  let deployed = false;
+  1180→  try { await account.getNonce(); deployed = true; } catch {}
+  1181→
+  1182→  console.log(`\n  Address  : ${account.address}`);
+  1183→  console.log(`  ETH Bal  : ${ethFloat.toFixed(6)} ETH`);
+  1184→  console.log(`  STRK Bal : ${strkFloat.toFixed(2)} STRK`);
+  1185→  console.log(`  Deployed : ${deployed}`);
+  1186→
+  1187→  return { ethFloat, strkFloat, deployed };
+  1188→}
+  1189→
+  1190→export async function ensureAccountDeployed(account: Account, provider: RpcProvider): Promise<void> {
+  1191→  console.log('\n── Account Deployment Check ──────────────────────────────');
+  1192→
+  1193→  try {
+  1194→    await account.getNonce();
+  1195→    console.log('  ✓ Account already deployed on-chain');
+  1196→    return;
+  1197→  } catch {}
+  1198→
+  1199→  const pk = process.env.STARKNET_PRIVATE_KEY!;
+  1200→  const pubKey = ec.starkCurve.getStarkKey(pk);
+  1201→  const targetBig = BigInt(account.address);
+  1202→
+  1203→  console.log(`  Derived public key: ${pubKey}`);
+  1204→
+  1205→  // Search all known class hashes for a match
+  1206→  for (const [name, { ch, buildCalldata, salt }] of Object.entries(KNOWN_CLASS_HASHES)) {
+  1207→    const cd   = buildCalldata(pubKey);
+  1208→    const s    = salt(pubKey);
+  1209→    const addr = hash.calculateContractAddressFromHash(s, ch, cd, 0);
+  1210→    if (BigInt(addr) === targetBig) {
+  1211→      console.log(`  ✓ Address matches: ${name}`);
+  1212→      console.log('  Deploying account using STRK fees...');
+  1213→      const { transaction_hash } = await account.deployAccount(
+  1214→        { classHash: ch, constructorCalldata: cd, addressSalt: s },
+  1215→      );
+  1216→      console.log(`  Deploy tx: ${transaction_hash}`);
+  1217→      console.log(`  Waiting for confirmation...`);
+  1218→      await provider.waitForTransaction(transaction_hash);
+  1219→      console.log('  ✓ Account deployed successfully!');
+  1220→      return;
+  1221→    }
+  1222→  }
+  1223→
+  1224→  // No match found — list what we computed for diagnostics
+  1225→  console.warn('\n  ⚠ Private key does not derive to the target address.');
+  1226→  console.warn('  This means the STARKNET_PRIVATE_KEY secret is still wrong.');
+  1227→  console.warn('\n  Target address:', account.address);
+  1228→  console.warn('  Derived pubkey:', pubKey);
+  1229→  console.warn('\n  Computed addresses:');
+  1230→  for (const [name, { ch, buildCalldata, salt }] of Object.entries(KNOWN_CLASS_HASHES)) {
+  1231→    const cd   = buildCalldata(pubKey);
+  1232→    const s    = salt(pubKey);
+  1233→    const addr = hash.calculateContractAddressFromHash(s, ch, cd, 0);
+  1234→    console.warn(`    ${name}: ${addr}`);
+  1235→  }
+  1236→  console.warn('\n  Please export the private key from the wallet that controls the target address.');
+  1237→  throw new Error('Private key does not match the target Starknet address.');
+  1238→}
+  1239→
+  1240→=== END chains/starknet/src/provider.ts ===

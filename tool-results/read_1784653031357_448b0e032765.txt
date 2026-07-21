@@ -1,0 +1,502 @@
+     1→# TRION Protocol — Complete Codebase Audit
+     2→## Whitepaper vs. Implementation, Component by Component
+     3→
+     4→**Auditor:** Replit Agent  
+     5→**Date:** July 8, 2026 (corrected July 9, 2026 after code review flagged four inaccuracies in the initial pass)  
+     6→**Sources:** Three whitepapers (TRION_Protocol_Whitepaper.md, TRION_PROTOCOL_Complete.html, TRION_Communication_Architecture.md) audited line-by-line against the full codebase.
+     7→
+     8→**Verdict summary:** The core mathematical and algorithmic foundation is substantively and, in several places, exactly implemented — including the five-plane coherence formula and the hash-chained Genomic Key, both verified correct on review. The real gaps are: two non-interoperable BH hash implementations, a missing TimescaleDB schema, volatile epigenetic storage, a CEX-price BTV endpoint that contradicts the "no price reading" claim, an incomplete on-chain signal struct, and four stack languages (Go, Haskell, Julia, C++) that have genuine standalone implementations sitting disconnected from the running services. WebAssembly is the only stack language with zero code.
+     9→
+    10→---
+    11→
+    12→## LEGEND
+    13→- ✅ **IMPLEMENTED** — matches whitepaper spec
+    14→- ⚠️ **PARTIAL** — present but diverges from spec in a documented way
+    15→- 🔴 **NOT IMPLEMENTED** — spec claim has no code equivalent
+    16→- 🟡 **BOOTSTRAP** — code exists but hardcoded placeholder (awaiting live network)
+    17→
+    18→---
+    19→
+    20→## PART 1 — LEVEL 0: UNIVERSAL PRIMITIVES
+    21→
+    22→### L0.1 — Behavioral Hash (BH) ✅ with ⚠️ field gap
+    23→
+    24→**Spec formula:**
+    25→```
+    26→BH(event,t) = Hash_DNA(DOMAIN_SEPARATOR || entity_id || event_type_id || magnitude_normalized 
+    27→               || magnitude_currency_id || timestamp || block_number || block_hash 
+    28→               || chain_id || counterparty_id || protocol_id || context_hash 
+    29→               || btcp_version || nonce)
+    30→```
+    31→
+    32→**Code (Rust indexers — canonical implementation):**  
+    33→Canonical 93-byte payload: `entity_id(32B) | event_type(1B) | magnitude_nano(8B) | context(8B) | timestamp(8B) | chain_id(4B) | block_hash(32B)`.
+    34→
+    35→**Gap:** The Rust implementation omits `DOMAIN_SEPARATOR`, `magnitude_currency_id`, `block_number`, `counterparty_id`, `protocol_id`, `btcp_version`, and `nonce` — 7 of the 14 spec fields. The Python FAISS service version uses a pipe-delimited string with different fields. **There are two independent BH implementations that produce different hashes for the same event.** This breaks the "canonical field order must not change" spec requirement.
+    36→
+    37→**Dual-strand:** ✅ Both implementations correctly compute `sense = SHA3-256(input || 0x00)` and `antisense = SHA3-256(input || 0xFF) XOR ~sense`. Complementarity verification is present.
+    38→
+    39→**20 event types:** ⚠️ Rust indexers map to 20 types but EVM only explicitly classifies TRANSFER, DEPLOY, MEV_CAPTURE — most EVM events fall back to heuristics. NEAR and Movement have the most complete type mapping. SVM covers 4 types explicitly.
+    40→
+    41→---
+    42→
+    43→### L0.2 — Behavioral Entity Object (BEO) / Entity Resolution ✅ with ⚠️ extra weight
+    44→
+    45→**Spec formula:**
+    46→```
+    47→BEO_confidence = (w_CF·CF + w_ST·ST + w_SC·SC + w_BP·BP) / Σweights
+    48→CF w=0.40, ST w=0.25, SC w=0.25, BP w=0.10 — threshold 0.75
+    49→```
+    50→
+    51→**Code (`src/core/entity_resolution.py`, `akashic/faiss_service.py`):**  
+    52→Formula matches but adds a **fifth component GX (graph co-occurrence, w=0.10)** not in the spec. Weights: CF=0.40, ST=0.25, SC=0.25, BP=0.10, GX=0.10. The sum exceeds 1.0 before normalization, which is correct (divided by Σweights), but the addition of GX changes the relative weighting of spec-defined components. The 0.75 threshold and BEO_confidence formula are otherwise correct.
+    53→
+    54→---
+    55→
+    56→### L0.3 — Resonance Communication Condition ✅
+    57→`Comm(A, B) iff ∃f : RF(A,f) > 0 AND RF(B,f) > 0`  
+    58→Implemented as shared event-type detection across chains. The 20 VM-agnostic event type IDs serve as the resonant frequency vocabulary as specified.
+    59→
+    60→---
+    61→
+    62→### L0.4 — Thermodynamic Information Conservation ⚠️ Philosophical, not mechanically enforced
+    63→The Akashic Index is append-only (SQLite + FAISS with no delete operations), which satisfies the spirit of `ΔI_transformed >= 0`. However, the Landauer erasure term `E_lost` is not computed anywhere — the information conservation equation `I_TRION(t) = BH_generated + A_absorbed - S_emitted - E_lost` is not evaluated as a running quantity. This is a philosophical architectural principle encoded as "append-only" but not as a measurable invariant.
+    64→
+    65→---
+    66→
+    67→### L0.5 — Signal Selection Principle ⚠️ Implicit only
+    68→`Signal selected iff dI_gained / dS_entropy_cost > θ_selection`  
+    69→The FAISS service filters by entropy thresholds in manipulation detection and coherence gating. No code explicitly computes `dI_gained / dS_entropy_cost` as the whitepaper defines it. Selection is implemented through MF_score and coherence thresholds, which approximates the intent.
+    70→
+    71→---
+    72→
+    73→### L0.6 — Evolutionary Fitness Function ⚠️ Partial — `Love` coefficient not computable
+    74→`F(component, t) = PA(c,t) · ICE(c,t) · AS(c,t) · Love(c,t)`  
+    75→The Intelligence Maintenance Protocol (`src/planes/mental/m_engine.py`) monitors `IM < IM_threshold` and triggers retraining. PA (predictive accuracy) and IM tracking are implemented. The `Love` (life-service coefficient) exists in `src/governance/awa_state.py` as a `GratitudeScore` but the formula `Value_given_to_life / Value_received_from_life >= 1` has no defined way to compute "value given to life" programmatically. The `F = 0 if Love = 0` constraint cannot be enforced in practice.
+    76→
+    77→---
+    78→
+    79→## PART 2 — LEVEL 1: PHYSICAL LAYER
+    80→
+    81→### L1.1 — Physical Richness Score Φ(t) ✅
+    82→`Φ(t) = (1/N) · Σ[w_i · H(f_i(t))]` — 9 Shannon entropy features.
+    83→
+    84→**Code (`src/planes/physical/phi_engine.py`):**  
+    85→Weights [0.15, 0.15, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10] match the spec. Shannon entropy of f1–f8 uses direct calculation. f9 (MEV interaction pattern) uses a heuristic on input length rather than true Shannon entropy of MEV pattern distribution — acceptable approximation for bootstrap phase. `Φ_adj = Φ × (1 - MF_score)` correctly implemented.
+    86→
+    87→---
+    88→
+    89→### L1.2 — Manipulation Fingerprint Detection (7 types) ✅
+    90→**Code (`src/manipulation/fingerprint_detector.py`):**  
+    91→All 7 types implemented with exact trigger thresholds from spec:
+    92→
+    93→| Type | Spec | Code |
+    94→|------|------|------|
+    95→| WASH_TRADING | ratio>0.60 AND counterparties<5 → 0.70×ratio | ✅ Exact |
+    96→| COORDINATED_PUMP | sync>0.80 across 3+ BEO → 0.85×ratio | ✅ Exact |
+    97→| ORACLE_ATTACK | deviation>15% within 10 blocks → 1.00 | ✅ Exact |
+    98→| SYBIL_LIQUIDITY | top5>80% AND <3 sources → 0.60×concentration | ✅ Exact |
+    99→| GOVERNANCE_CAPTURE | HHI>4000 AND age<48h → 0.50×scaled_HHI | ✅ Exact |
+   100→| MEV_EXTRACTION | rate>0.5% >7 days → 0.40×scaled_rate | ✅ Exact |
+   101→| FAKE_VOLUME | entropy<threshold AND volume>10× → 0.80×(1-entropy) | ✅ Exact |
+   102→
+   103→`MF_score = min(1.0, max(all type contributions))` — correct.  
+   104→Flash loan defense `NL_smooth = median(NL(t-2), NL(t-1), NL(t))` and `FLASH_LOAN_DISCOUNT = 0.15` — present in code.  
+   105→Wash trading defense `D_effective = D × (1 - HHI(counterparty_distribution))` — present.
+   106→
+   107→---
+   108→
+   109→### L1.3 — Temporal Coherence ✅
+   110→`TC(t) = 1 - max_i(|t_plane_i - t_reference|) / TTL_min`  
+   111→Implemented in `src/core/temporal_coherence.py` as decay-weighted variance of state transitions. The exact spec formula is approximated rather than literally implemented, but the intent (freshness of contributing data, staleness detection) is correctly encoded.
+   112→
+   113→---
+   114→
+   115→### L1.4 — Transduction Integrity 🔴 NO HSM INTEGRATION
+   116→`TI(sensor, t) = Calibration(s,t) · Drift_correction(s,t) · Cross_verification(s,t)`  
+   117→The spec states "HSM (Thales Luna 7 / YubiHSM 2) — NON-NEGOTIABLE." **No HSM hardware interface exists anywhere in the codebase.** No C++ hardware driver code (listed as required in the tech stack). The `H_environment > 0` physical entropy requirement for the Kolmogorov complexity bound cannot be satisfied without actual hardware entropy sources. This is a critical gap: the Kolmogorov bound proof (`K(H(TRION,t)) >= Ω(t · N_chains · N_validators · H_environment)`) assumes `H_environment > 0` always, which is formally unverifiable without the HSM.
+   118→
+   119→---
+   120→
+   121→## PART 3 — LEVEL 2: AKASHIC INDEX
+   122→
+   123→### L2.1 — Akashic Depth D(t) ⚠️ Formula present, storage backend incomplete
+   124→`D(t) ∝ ∫₀ᵗ [A(τ) · (1+M(τ)) · C(τ)] dτ`  
+   125→Depth tracking exists in FAISS service. However, the spec requires **TimescaleDB** ("purpose-built time-series, billions of events, microsecond query"). The `TIMESCALEDB_URL` env var is wired into the TRION relayer, but the `behavioral_events` table schema has never been applied — the DA streamer errors on startup with `relation "behavioral_events" does not exist`. **The primary Akashic storage tier (TimescaleDB) is non-functional.** Data is currently stored in FAISS and SQLite only.
+   126→
+   127→---
+   128→
+   129→### L2.2 — Genesis Inference / Archetype Similarity ✅ with ⚠️ simplified archetypes
+   130→`sim(G, A_k) = (G · A_k) / (‖G‖ · ‖A_k‖)` — cosine similarity in 128-dim space via FAISS.
+   131→
+   132→**Code (`src/core/genesis_inference.py`, `akashic/genesis_backfill.py`):**  
+   133→Archetype matching implemented using FAISS vector search. `conf_genesis(t) = 1 - e^(-λ · D_asset(t))` formula present. Signal blend `S_total = conf_genesis·S_direct + (1-conf_genesis)·S_archetype` implemented.
+   134→
+   135→⚠️ **Archetype library uses named categories** (AMM_POOL, STAKING_CONTRACT, etc.) rather than the >90% behavioral space coverage that requires a full Akashic depth. At current bootstrap state, archetype library is limited.
+   136→
+   137→---
+   138→
+   139→### L2.4 — Resurrection Inference ✅
+   140→Five dormancy types (ABANDONED, HIBERNATION, MIGRATION, REGULATORY_PAUSE, EXPLOIT_RECOVERY) with correct κ decay coefficients. `Δ_resurrection` formula implemented. Outcome classification (GENUINE_CONTINUATION, NEW_ENTITY_OLD_SHELL, HOSTILE_TAKEOVER, ZOMBIE) present.
+   141→
+   142→---
+   143→
+   144→### L2.6 — Fork Resolution ✅
+   145→`CC_A / CC_B` holder retention coefficients implemented in `src/planes/physical/fork_resolution.py`. Type A/B/C fork classification matches spec. FORK_DIVERGENCE signal emitted on detection.
+   146→
+   147→---
+   148→
+   149→### L2.7 — Trajectory Anomaly Monitor ✅
+   150→`TRAJ_ANOMALY = KL_divergence(P_actual, P_expected(matched_archetype))` implemented in `src/planes/physical/trajectory_anomaly.py`. KL divergence threshold (>2 standard deviations) and Genesis Signal invalidation on breach are present.
+   151→
+   152→---
+   153→
+   154→## PART 4 — LEVEL 3: MENTAL LAYER / ANIMA
+   155→
+   156→### L3.1 — Mental Confidence Score M(t) ✅
+   157→`M(t) = 1 - (PI_t / PI_baseline)` — Student's t-distribution prediction intervals.  
+   158→**Code (`src/planes/mental/m_engine.py`):** Exact formula. Confidence ≠ Accuracy distinction maintained (accuracy tracked separately in Akashic history).
+   159→
+   160→---
+   161→
+   162→### L3.2 — Observer Effect Adjustment ✅
+   163→`M_adj(t) = M_base(t) · (1 - OE_factor(t))`  
+   164→`OE_factor = corr(signal_publication(t-1), behavioral_change(t))`  
+   165→Implemented in both `m_engine.py` and `akashic/faiss_service.py`. OE_factor published with every signal as specified. Reflexivity flag emitted when OE > 0.3.
+   166→
+   167→---
+   168→
+   169→### L3.3 — ANIMA Score 🟡 BOOTSTRAP (D < 10,000)
+   170→`A(t) = PCR(t) · HA(t) · CA(t)`
+   171→
+   172→**Code (`src/planes/anima/anima_engine.py`, `akashic/anima_engine.py`):**  
+   173→Formula implemented. Bootstrap gate: returns 0.10 until Akashic depth ≥ 10,000. HA cutoff (<0.60 → A=0) and ANIMA reflexivity dampening (`A_adj = A · (1 - β_reflexivity · ANIMA_reflexivity)`) implemented. `CRED(source,t)` decay and update implemented with SQLite-backed source registry.
+   174→
+   175→**Scale claims vs. reality:**
+   176→- Spec: "1,000+ concurrent crawlers" → Code: ~30 hardcoded RSS/API feeds (Coindesk, TheBlock, SEC EDGAR, CFTC, GitHub, arXiv). No distributed crawler infrastructure exists.
+   177→- Spec: "50+ languages NLP" → Code: English-only VADER sentiment + custom risk lexicons. Dashboard `AnimaStats.tsx` displays "59 NLP Languages" but this is a display label with no underlying multi-language NLP implementation.
+   178→- Spec: "SEC EDGAR (Form 4, 8-K, 13F)" → ✅ Implemented via `akashic/anima_regulatory.py` with real HTTP fetch of SEC archive bodies, keyword analysis, and CRED scoring.
+   179→- Spec: "ecological signals (BC, XSL, IUCN Red List, satellite habitat monitoring)" → `liquidity_ocean.py` exists with partial cross-domain signal categories but no IUCN API integration, no satellite data, no species population databases.
+   180→
+   181→---
+   182→
+   183→### L3.4 — Source Credibility Evolution ✅
+   184→`CRED(source,t) = CRED(source,t-1) · 0.99 + verification_events · β_update`  
+   185→Exact spec deltas: VERIFIED +1.0, FALSIFIED -2.0, MANIPULATION -3.0, CONFLICT_OF_INTEREST -5.0.  
+   186→CRED < 0.30 → flagged; CRED < 0.10 → excluded. Implemented with SQLite persistence.
+   187→
+   188→---
+   189→
+   190→### L3.5 — ANIMA Reflexivity Dampening ✅
+   191→`ANIMA_reflexivity(S,t) = corr(ANIMA_signal_strength(S,t-1), behavioral_change_attributed_to_signal(S,t))`  
+   192→Manifestation Gap Monitor tracking `MG_rolling` per signal category also implemented.
+   193→
+   194→---
+   195→
+   196→## PART 5 — LEVEL 4: SPIRITUAL LAYER / LIVING SECURITY
+   197→
+   198→### L4.1 — Diversity-Weighted BFT Consensus 🟡 BOOTSTRAP
+   199→`d_j = 1 - corr(M_j, M̄)` — `w_j_effective = s_j · d_j`  
+   200→`Σ(t) = Σ(s_j·d_j·1{|v_j-v̄|≤δ}) / Σ(s_j·d_j)`
+   201→
+   202→**Code (`src/consensus/diversity_weighted_bft.py`, `hardhat/contracts/TRIONStaking.vy`):**  
+   203→Formula exactly implemented including dynamic consensus window `δ(t) = δ_base · (1 + V(t))`. HHI monitoring with all four response tiers (HEALTHY/WARNING/DANGER/CRITICAL) and geographic enforcement (N_continents ≥ 4, max region < 0.40, max jurisdiction < 0.30) implemented in TRIONStaking.vy.
+   204→
+   205→**Bootstrap reality:** No real validator network exists. Σ(t) is hardcoded to 0.25 in the oracle until mainnet. The Coordination Collapse Theorem is correctly proved in code but cannot be tested without actual validators.
+   206→
+   207→---
+   208→
+   209→### L4.2 — Conscious Plane K(t) 🟡 BOOTSTRAP
+   210→**Code (`src/planes/conscious/k_engine.py`):**  
+   211→Commit-reveal 3-of-5 voting, `K(t) = weighted_k × temporal_consistency`, 12 anti-regulatory-capture protections implemented as flags. **Explicitly returns bootstrap value 0.10.** No annotation network exists; no annotators are onboarded.
+   212→
+   213→---
+   214→
+   215→### L4.3 — Genomic Key Evolution ✅
+   216→**Spec:** `GK(entity,t) = Hash_DNA(GK(entity,t-1) || BE(t) || TM(t) || CV(t))`  
+   217→**Code (`src/security/living_security.py` — `GenomicKeyEvolver.evolve()`):** Implements the spec formula exactly — each evolution hashes the previous key's sense strand with `be_hash` (behavioral entropy), `tm_hash` (timestamp/block), `cv_hash` (consensus view), plus a monotonically-growing `h_environment` accumulator, through the dual-strand `hash_dna()` primitive. `kolmogorov_bound()` computes the lower-bound estimate from time, chain count, validator count, and environment entropy as specified.
+   218→
+   219→Separately, `src/akashic/epigenetics.py` implements a `methylation_mask` — a feature suppression/amplification bitmask under environmental pressures (MARKET_CRASH, EXPLOIT, etc.). This is a distinct, correctly-named **Epigenetic Layer** component (L4.5, not the Genomic Key) and should not be confused with GK evolution; both are present and each satisfies its own spec section.
+   220→
+   221→---
+   222→
+   223→### L4.4 — Living Immune System ✅
+   224→Three-layer architecture (INNATE/ADAPTIVE/MEMORY) implemented. Pattern matching against Adaptive Threat Library in real-time. New attack type → characterize → signature added to CRISPR library. Memory never decays. `attack_alert_webhook.py` hooks into the immune response pipeline.
+   225→
+   226→---
+   227→
+   228→### L4.5 — Epigenetic Layer ✅
+   229→`EL_state(t) = f(Threat_level, Validator_health, Network_entropy)`  
+   230→Implemented in `src/akashic/epigenetics.py`. Architecture unchanged, expression adapts. Pressure types (MARKET_CRASH, EXPLOIT, REGULATORY_ACTION) map to methylation changes. State persisted at `/tmp/trion_epigenetic_state.json` — note this is a **volatile path** that will be lost on container restart; a persistent path is needed.
+   231→
+   232→---
+   233→
+   234→### L4.6 — CRISPR Defense ✅
+   235→Attack signature library with surgical transaction interception before execution. Integrated with immune system ADAPTIVE layer for continuous signature addition. Correct behavior: "target contract's bytecode never changes."
+   236→
+   237→---
+   238→
+   239→### L4.7 — Living Security Score ✅
+   240→`SEC(t) = LSS(t) · PQC(t) · CC(t)`  
+   241→CRYSTALS-Kyber + CRYSTALS-Dilithium + SPHINCS+ referenced in PQC layer. SHA-3, AES-256, ZK proof references present. Three-layer requirement maintained.
+   242→
+   243→---
+   244→
+   245→### L4.8 — Validator Concentration Control (HHI) ✅
+   246→`HHI(t) = Σ(s_j·d_j / Σs_k·d_k)² × 10000`  
+   247→All four response tiers and geographic enforcement implemented in `TRIONStaking.vy`. FALSIFIABLE F8 condition (`HHI > 2500 sustained > 30 days without correction`) is architecturally enforced.
+   248→
+   249→---
+   250→
+   251→### L4.9 — Slashing + Dispute Resolution ✅
+   252→All slashing conditions implemented in `TRIONStaking.vy`:  
+   253→- COORDINATED_ATTACK_CONFIRMED: 50% + permanent exclusion  
+   254→- SUSTAINED_LOW_ACCURACY: 3% per 30-day window  
+   255→- HARDWARE_SECURITY_FAILURE: 10%  
+   256→- UPTIME_FAILURE: 0.1%/day  
+   257→- SYBIL_CLUSTER_CONFIRMED: 25% for all in cluster  
+   258→
+   259→72-hour challenge window, challenge bond, 3-validator + 1 human oversight review, permanent logging — all present.
+   260→
+   261→---
+   262→
+   263→## PART 6 — LEVEL 5: FIVE-PLANE COHERENCE (MASTER EQUATION)
+   264→
+   265→### L5.1 — Five-Plane Coherence C(t) ✅ with ⚠️ asset-profile gap
+   266→
+   267→**Spec (both whitepapers):**
+   268→```
+   269→C(t) = α·Φ_adj(t) + β·M_adj(t) + γ·Σ(t) + δ·K(t) + ε·A(t)   [ADDITIVE]
+   270→Default balanced: α=0.25, β=0.30, γ=0.25, δ=0.10, ε=0.10
+   271→```
+   272→
+   273→**Code (`akashic/faiss_service.py` — `_five_plane_coherence()`, verified at line 8064):**
+   274→```python
+   275→w = [0.25, 0.30, 0.25, 0.10, 0.10]   # L5.2 Default balanced
+   276→c_t = sum(wi * pi for wi, pi in zip(w, planes))   # ADDITIVE weighted average ✅
+   277→limiting = names[int(np.argmin(planes))]            # limiting_plane ✅
+   278→```
+   279→
+   280→The formula is **correctly implemented** as the spec-defined additive weighted average. The function accepts a `profile` dict allowing any of the five weight profiles (SPEED, INTELLIGENCE, CERTAINTY, FULL_SPECTRUM, asset-type calibrated). All plane values and the limiting_plane are returned and used throughout signal emission.
+   281→
+   282→⚠️ **Asset-type calibrated weight profiles** (NEW_TOKEN α=0.40, MATURE_PROTOCOL α=0.20, STABLECOIN, GOVERNANCE_TOKEN, BRIDGE_ASSET, WRAPPED_ASSET) from the Complete spec are not yet wired to automatic asset-type detection at signal emission time. The correct weights exist but automatic profile selection by asset type requires integration with `detect_asset_type()`.
+   283→
+   284→---
+   285→
+   286→### L5.2 — Dynamic Threshold Θ(t) ✅
+   287→`Θ(t) = 0.55 + (0.92 - 0.55) · V(t)` — rises with volatility, falls in stable conditions. Implemented correctly.
+   288→
+   289→---
+   290→
+   291→### L5.3 — Consensus Degradation Tiers ✅
+   292→Tier 1 (C between 0.5Θ and Θ): STALE_SCORE + fallback to last BIBL snapshot (max 50 blocks).  
+   293→Tier 2 (C < 0.5Θ): new routes suspended, in-flight complete normally.  
+   294→"Entity funds NEVER at risk during degradation" guarantee encoded.
+   295→
+   296→---
+   297→
+   298→### L5.4 — SILENCE Signal ✅
+   299→```
+   300→SILENCE { coherence_gap, limiting_plane, coherence_trend, eta }
+   301→```
+   302→Implemented in `src/core/coherence_engine.py`. Carries all four fields. Published via Oracle API and relayed on-chain through all relayer types. SILENCE is treated as informative (not void) throughout the codebase.
+   303→
+   304→---
+   305→
+   306→## PART 7 — LEVELS 6–9: EXTENDED INTELLIGENCE
+   307→
+   308→### L6.1 — Biological Capital Index ⚠️ Structure present, data absent
+   309→`BC(ecosystem,t) = Flow · Resilience · Uniqueness · Interdependence`  
+   310→Formula and data structures implemented in `src/planes/extended/`. **No live data connections to IUCN Red List, peer-reviewed ecosystem surveys, or satellite habitat monitoring.** BC feeds into ANIMA as a cross-domain signal category but is computed on static or stubbed ecological data.
+   311→
+   312→---
+   313→
+   314→### L6.2 — Biological Rhythm Timer (BRT) ✅
+   315→```
+   316→BRT(t) = { circadian: (t mod 86400)/86400, ultradian: (t mod 5400)/5400,
+   317→           lunar: (t mod 2551442)/2551442, seasonal: (t mod 31557600)/31557600 }
+   318→```
+   319→Implemented in `akashic/brt_scheduler.py`. GPS primary / NTP redundant phase-lock described in spec — **GPS interface not implemented** (no C++ hardware driver); NTP-based system clock used instead. All four phase computations are correct modular arithmetic. BRT included in every TRIONSignal per spec. Dashboard does not visualize BRT phases despite spec requirement.
+   320→
+   321→---
+   322→
+   323→### L7.1 — Natural Liquidity Score (NL) ⚠️ Two competing implementations
+   324→
+   325→**Spec:** `NL = LD · LO · LC · LS`
+   326→
+   327→**Code 1 (`src/planes/physical/nl_engine.py`):**  
+   328→`NL = LD · LO · LC · LS` — **correct formula**, all four components computed correctly:  
+   329→- LD = Shannon entropy of depth distribution across price levels  
+   330→- LO = 1 - Sybil_LP_ratio  
+   331→- LC = corr(LD_current, LD_90d_baseline)  
+   332→- LS = LD_during_stress / LD_normal  
+   333→`NL < 0.30 → LIQUIDITY_HEALTH signal` threshold correct.
+   334→
+   335→**Code 2 (`src/core/btcp_score.py` liquidity component):**  
+   336→Uses `NL = Σ(vol_i · conf_i) / slippage_expected` — a different formula. This appears to be an older or simplified version. The `nl_engine.py` version is canonical and should be the only one used.
+   337→
+   338→---
+   339→
+   340→### L7.2 — Energy Participation Index (EP) ✅
+   341→`EP = VC · PA · DC` — implemented in `src/planes/extended/`. All three sub-components (Value Creation Ratio, Protocol Activity Entropy, Deployer Commitment Score) are present.
+   342→
+   343→---
+   344→
+   345→### L8.1 — Sovereign Behavioral Assessment (SBA) ✅
+   346→`SBA(nation,t) = w_E·E + w_I·I + w_S·S + w_G·G + w_C·C`  
+   347→Weights (0.30, 0.25, 0.20, 0.15, 0.10) correct. `I = corr(stated_policy, onchain_enforcement_behavior)` implemented. Mandatory metadata (CI_95, cultural_context_vector, appeal_mechanism, data_sources) present in output struct. Sovereignty Dignity Protocol flags active.
+   348→
+   349→---
+   350→
+   351→### L9.1 — Cross-Species Liquidity (XSL) ⚠️ Formula present, data absent
+   352→`XSL = TerritoryViability · FoodSecurity · ReproductionRate / (1 + ThreatPressure)`  
+   353→Formula and struct defined. **No live data from IUCN habitat assessments, prey biomass density databases, or threat pressure monitoring systems.** XSL feeds ANIMA as a category but cannot produce meaningful signals without ecological data.
+   354→
+   355→---
+   356→
+   357→### L9.2 — Information Conservation Law ✅ (architectural principle)
+   358→Akashic Index is append-only by design. No delete operations in SQLite or FAISS. The `dI_TRION/dt >= 0` constraint is architecturally honored.
+   359→
+   360→---
+   361→
+   362→## PART 8 — SMART CONTRACTS
+   363→
+   364→### Signal Publication (Solidity) ✅ with ⚠️ TRIONSignal struct incomplete
+   365→
+   366→**Contracts present:**
+   367→- `hardhat/contracts/TRIONOracleV3.sol` — Chainlink AggregatorV3-compatible price feed + behavioral metadata
+   368→- `hardhat/contracts/TRIONExecutionGate.sol` — 0G chain execution gate with status codes (SAFE/ELEVATED/COLLAPSE/HOSTILE)
+   369→- `hardhat/contracts/TRIONSignal.sol` — central signal registry
+   370→- `hardhat/contracts/AkashicProof.sol` — behavioral proof anchoring
+   371→
+   372→**TRIONSignal.sol struct — 13 fields implemented vs 24+ required:**
+   373→
+   374→| Spec Field | Implemented |
+   375→|---|---|
+   376→| signal_id | ✅ |
+   377→| signal_type | ✅ |
+   378→| entity_id | ✅ |
+   379→| signal_value | ✅ |
+   380→| ci_lo, ci_hi (CI_95) | ✅ |
+   381→| conf_genesis | ✅ |
+   382→| chain_id | ✅ |
+   383→| block_height | ✅ |
+   384→| genomic_sense, antisense, invariant | ✅ |
+   385→| timestamp | ✅ |
+   386→| publisher | ✅ |
+   387→| coherence C(t) | 🔴 Missing |
+   388→| threshold Θ(t) | 🔴 Missing |
+   389→| margin C-Θ | 🔴 Missing |
+   390→| plane_breakdown (5 planes + limiting_plane) | 🔴 Missing |
+   391→| temporal_coherence | 🔴 Missing |
+   392→| entropy | 🔴 Missing |
+   393→| akashic_depth | 🔴 Missing |
+   394→| observer_effect | 🔴 Missing |
+   395→| bootstrap_phase | 🔴 Missing |
+   396→| reflexivity_flag | 🔴 Missing |
+   397→| immune_clearance | 🔴 Missing |
+   398→| security_generation | 🔴 Missing |
+   399→| provenance ([]BehavioralHash) | 🔴 Missing |
+   400→| validator_count | 🔴 Missing |
+   401→| validator_hhi | 🔴 Missing |
+   402→| ttl | 🔴 Missing |
+   403→| biological_time (4 phases) | 🔴 Missing |
+   404→
+   405→The TRIONOracleV3 and TRIONExecutionGate contracts do carry coherence, threshold, phi, and status in packed uint256 bit-layouts. The gap is specifically in `TRIONSignal.sol` which the spec describes as the complete canonical signal registry.
+   406→
+   407→---
+   408→
+   409→### Economic Coordination (Vyper) ✅
+   410→`TRIONStaking.vy` and `TRIONToken.vy` implemented in Vyper 0.3.10 as specified.  
+   411→- TRIONStaking.vy: `register_validator`, `update_diversity_score`, `slash_validator`, `dispute_slash`, `resolve_dispute`, `submit_hhi`, `distribute_reward`, `is_signal_emission_allowed`
+   412→- TRIONToken.vy: ERC-20 with 15% Public Good Charter auto-route, 2% annual inflation cap, AWA-gated minting
+   413→
+   414→Spec says "no inflation mechanism / fixed supply at genesis." TRIONToken.vy has `governance_mint` with 2% annual cap — this is an inflation mechanism. The Complete spec explicitly allows this (2% cap) but the Whitepaper says "fixed at genesis, no inflation mechanism" — these two source documents contradict each other. The code follows the Complete spec.
+   415→
+   416→---
+   417→
+   418→## PART 9 — BEHAVIORAL ADVANCED PROTOCOLS
+   419→
+   420→### BIBL — Behavioral Inter-Block Layer ✅
+   421→Implemented in `src/core/bibl.py` + `bibl_pattern_store.py`. Cross-block fingerprint archiving and matching. Chain Memory Instruction Signal present. The 12-second Ethereum inter-block intelligence cycle described in spec is implemented as a polling loop. User preference profiles (GasPreferenceProfile) implemented.
+   422→
+   423→---
+   424→
+   425→### BTCP Score ⚠️ Two implementations, one diverges
+   426→
+   427→**Spec:** `BTCP_score = [0.25×NL + 0.20×normalize_gas + 0.20×finality_conf + 0.15×CC_coherence + 0.20×BEO_continuity] × (1 - MF_score)`
+   428→
+   429→**Code 1 (`src/core/btcp_score.py`):** ✅ Exact spec formula with correct component weights.
+   430→
+   431→**Code 2 (Oracle API, BTV computation):** Uses `Behavioral True Value = CEX_Price × (1 - manipulation_discount)` as a price-adjusted signal. **This is not in the whitepaper spec at all** — the spec explicitly states TRION does not read price. The BTV mechanism references external CEX price feeds, which is architecturally contrary to the whitepaper's core claim ("TRION does not read price"). This should be clearly labeled as a bridge/compatibility layer, not as a primary truth signal.
+   432→
+   433→---
+   434→
+   435→### BIRP — Behavioral Identity Recovery Protocol ✅
+   436→Implemented across `src/signals/birp.py` and `src/signals/behavioral_identity_recovery.py`. WitnessShard distribution across validators. BehavioralCommitment for key recovery. Five recovery phases (DNA_Code verification, behavioral proof, temporal cluster challenge, Conscious Layer verification, 7-day waiting period) all present. `BIRP_anchor = Hash_DNA(BEO_baseline || Hash(DNA_Code) || enrollment_timestamp || behavioral_entropy_seed)` implemented.
+   437→
+   438→---
+   439→
+   440→### Chameleon Protocol / AWA ✅
+   441→`src/security/chameleon_protocol.py` — Moving Target Defense via ChameleonCipher and rotation_speed. Threat-level expression changes (LOW → increase privacy, MEDIUM → ZK default, HIGH → validator geographic rebalancing, CRITICAL → signal disaggregation, WEAPONIZATION → emission FROZEN).  
+   442→`src/governance/awa_state.py` — AWAEnforcer with GratitudeScore, BootstrapProtocol. AWA conditions from spec all present.
+   443→
+   444→---
+   445→
+   446→### Adaptive Consensus (CONSENSUS_ADAPTATION_SIGNAL) ✅
+   447→`CONSENSUS_ADAPTATION_SIGNAL` struct with target_chain, trigger, proposed_change, duration, confidence, behavioral_evidence implemented. `TEMPORARY` duration with condition-to-revert enforced. All ACCEPT/REJECT/PARTIAL/DEFER outcomes logged to Akashic Index.
+   448→
+   449→---
+   450→
+   451→## PART 10 — TECHNOLOGY STACK AUDIT
+   452→
+   453→| Language | Spec Purpose | Status |
+   454→|---|---|---|
+   455→| Rust | Core protocol, BH, cryptography, indexers, Φ, signal emission | ✅ Implemented — 4 VMs (EVM, SVM, NEAR, Move) |
+   456→| Python/ML | Model training, archetype clustering, NLP, ANIMA | ✅ Implemented — the primary runtime language |
+   457→| TypeScript | Developer SDK, type-enforced signal taxonomy | ✅ Dashboard + SDK present |
+   458→| Solidity | Signal publication contracts | ✅ TRIONOracleV3, TRIONExecutionGate, TRIONSignal, AkashicProof |
+   459→| Vyper | Validator staking, slashing, TRION token | ✅ TRIONStaking.vy, TRIONToken.vy |
+   460→| Go | P2P validator networking, ANIMA crawler coordination | ⚠️ Present (`go/validator_mesh.go`, `go/crawler_coordinator.go`, `network/health_monitor.go`) but not wired into a running service — no live validator network to mesh with |
+   461→| Haskell | Formal verification, mathematical theorems as types | ⚠️ Present (`math/formal_verification.hs`, `docs/research/formal/proofs.hs`) — theorems T1–T8 expressed as types; not compiled/CI-checked as part of the build |
+   462→| Julia | Scale invariance verification, entropy calculation | ⚠️ Present (`math/trion_entropy_verification.jl`, `docs/research/math/trion_math.jl`) — shannon_entropy, coherence, kolmogorov_bound implemented; not invoked at runtime by the Python services |
+   463→| C++ | FFT computation, hardware interface drivers, sensor nodes | ⚠️ Present (`cpp/fft_engine.cpp`, `cpp/sensor_interface.cpp`, `docs/research/hardware/signal_processor.cpp`) — Cooley-Tukey FFT and entropy detection implemented; not linked into the Python physical-plane pipeline |
+   464→| WebAssembly | Browser-side signal processing | 🔴 No WASM compilation or .wasm files |
+   465→| TimescaleDB | Akashic Index primary storage | 🔴 Schema not applied, behavioral_events table missing |
+   466→
+   467→Correction from an earlier draft of this audit: Go, Haskell, Julia, and C++ source files **do exist** in the repo (`go/`, `math/`, `cpp/`, `docs/research/`) with real, non-trivial implementations of their respective spec responsibilities. The gap is **integration, not absence**: none of these four languages' code is compiled/linked into the running services — they are standalone modules that would need a build step and a call boundary (FFI, RPC, or subprocess) to participate in the live pipeline. Only WebAssembly has zero files.
+   468→
+   469→---
+   470→
+   471→## PART 11 — THE 19 SIGNAL TYPES
+   472→
+   473→| Signal | Spec | Status |
+   474→|---|---|---|
+   475→| VALUATION | Core behavioral valuation | ✅ |
+   476→| SILENCE | Structured null with gap/plane/trend/eta | ✅ |
+   477→| LIQUIDITY_HEALTH | NL < 0.30 | ✅ |
+   478→| MANIPULATION_ALERT | MF fingerprint detected | ✅ |
+   479→| TRAJECTORY | ANIMA pre-manifestation | ✅ |
+   480→| SYSTEMIC_RISK | Cascade propagation | ✅ |
+   481→| GOVERNANCE_SIGNAL | DAO behavioral patterns | ✅ |
+   482→| CROSS_CHAIN_COHERENCE | Multi-chain divergence | ✅ |
+   483→| STABLECOIN_HEALTH | Behavioral depeg risk | ✅ |
+   484→| PHASE_TRANSITION | Lifecycle change detected | ✅ |
+   485→| FORK_DIVERGENCE | Fork with CC_A/CC_B weights | ✅ |
+   486→| GENESIS | New asset archetype-inferred | ✅ |
+   487→| REGULATORY_BEHAVIORAL | Precursors to regulatory action | ✅ (SEC EDGAR implemented) |
+   488→| SOVEREIGN_BEHAVIORAL | SBA signal | ✅ |
+   489→| MEV_BEHAVIORAL | MEV extraction pattern | ✅ |
+   490→| ENERGY_PARTICIPATION | EP = Value Creation Ratio | ✅ |
+   491→| BIOLOGICAL_CAPITAL | BC ecosystem health | ⚠️ Formula present, no live ecological data |
+   492→| BTCP_ROUTE | Cross-chain behavioral routing | ✅ |
+   493→| CONSENSUS_ADAPTATION | Temp consensus recommendations | ✅ |
+   494→
+   495→18 of 19 signal types have code implementations. BIOLOGICAL_CAPITAL is structurally present but cannot produce meaningful signals without live ecological data feeds.
+   496→
+   497→---
+   498→
+   499→## PART 12 — MULTI-CHAIN COVERAGE
+   500→
+
+[showing lines 1-500 of 661; use offset=501 with limit to continue reading]

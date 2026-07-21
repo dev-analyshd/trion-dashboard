@@ -1,0 +1,2447 @@
+===== src/agent/safety_pipeline.py =====
+"""
+TRION AI Agent Safety Pipeline
+================================
+TRION as mandatory behavioral validation middleware for AI agents.
+Any AI agent must route decisions through this pipeline to receive:
+  - Coherence stamp (is this action safe / coherent?)
+  - Risk classification
+  - Behavioral constraint enforcement
+  - Evolutionary fitness scoring
+  - SILENCE gate (block unsafe actions)
+
+Usage:
+    pipeline = TRIONAgentPipeline()
+    result = pipeline.validate_action(agent_id, action, context)
+    if result.allowed:
+        execute(action)
+    else:
+        handle_blocked(result.reason)
+"""
+
+import time
+import hashlib
+import math
+import logging
+import sys
+import os
+from typing import Dict, List, Optional, Any, Tuple
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+
+import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+
+logger = logging.getLogger(__name__)
+
+
+class ActionType(Enum):
+    TRADE = "trade"
+    TRANSFER = "transfer"
+    VOTE = "vote"
+    DEPLOY = "deploy"
+    CALL = "call"
+    MINT = "mint"
+    BURN = "burn"
+    BRIDGE = "bridge"
+    STAKE = "stake"
+    UNSTAKE = "unstake"
+    APPROVE = "approve"
+    QUERY = "query"
+    UNKNOWN = "unknown"
+
+
+class ValidationOutcome(Enum):
+    ALLOWED = "ALLOWED"
+    BLOCKED = "BLOCKED"
+    MODIFIED = "MODIFIED"   # allowed with constraints applied
+    DEFERRED = "DEFERRED"   # allowed after delay (cooling period)
+    SILENCED = "SILENCED"   # blocked due to low coherence
+
+
+@dataclass
+class AgentAction:
+    action_type: ActionType
+    entity_id: str                   # contract/wallet being acted upon
+    value_usd: float                 # estimated USD value
+    chain_id: int
+    raw_data: Dict = field(default_factory=dict)
+    metadata: Dict = field(default_factory=dict)
+
+
+@dataclass
+class ValidationResult:
+    outcome: ValidationOutcome
+    allowed: bool
+    coherence_score: float           # computed C(t) for this action
+    risk_score: float
+    confidence: float
+    reason: str
+    constraints: List[str]           # applied constraints if MODIFIED
+    recommendations: List[str]
+    fitness_delta: float             # expected agent fitness change
+    behavioral_stamp: str            # tamper-proof TRION stamp
+    processing_time_ms: float
+    blocked_by: Optional[str] = None  # which gate blocked it
+
+
+@dataclass
+class AgentProfile:
+    agent_id: str
+    created_at: int
+    total_actions: int = 0
+    allowed_actions: int = 0
+    blocked_actions: int = 0
+    avg_coherence: float = 0.5
+    fitness_score: float = 0.5       # evolves over time
+    behavioral_history: List[float] = field(default_factory=list)
+    reputation: float = 0.5
+    trust_level: str = "PROBATION"   # PROBATION | TRUSTED | VERIFIED | EXEMPLARY
+
+
+# In-memory agent registry (production: use DB)
+_AGENT_REGISTRY: Dict[str, AgentProfile] = {}
+
+
+class TRIONAgentPipeline:
+    """
+    TRION safety pipeline. Agents must route all significant actions through here.
+    
+    Gates (in order):
+    1. SILENCE gate — block if coherence below minimum threshold
+    2. RISK gate — block CRITICAL risk actions  
+    3. VALUE gate — block value above agent's authorized limit
+    4. MANIPULATION gate — block if action matches manipulation pattern
+    5. EVOLUTION gate — reward/penalize based on fitness
+    """
+
+    SILENCE_THRESHOLD = 0.25       # coherence below this → SILENCE
+    RISK_BLOCK_THRESHOLD = 0.85    # risk above this → BLOCK
+    DEFAULT_VALUE_LIMIT = 100_000  # USD per action for PROBATION agents
+
+    VALUE_LIMITS = {
+        "PROBATION": 10_000,
+        "TRUSTED": 100_000,
+        "VERIFIED": 1_000_000,
+        "EXEMPLARY": float("inf"),
+    }
+
+    def __init__(self, faiss_url: str = "http://127.0.0.1:8000",
+                 oracle_url: str = "http://127.0.0.1:5000"):
+        self.faiss_url = faiss_url
+        self.oracle_url = oracle_url
+
+    def _get_or_create_agent(self, agent_id: str) -> AgentProfile:
+        if agent_id not in _AGENT_REGISTRY:
+            _AGENT_REGISTRY[agent_id] = AgentProfile(
+                agent_id=agent_id,
+                created_at=int(time.time()),
+            )
+        return _AGENT_REGISTRY[agent_id]
+
+    def _compute_action_coherence(self, action: AgentAction,
+                                   agent: AgentProfile) -> float:
+        # Base coherence from agent history
+        base = agent.avg_coherence
+
+        # Action-type risk modifiers
+        risk_mods = {
+            ActionType.QUERY: 0.0,
+            ActionType.STAKE: -0.05,
+            ActionType.UNSTAKE: -0.08,
+            ActionType.TRANSFER: -0.10,
+            ActionType.TRADE: -0.12,
+            ActionType.VOTE: -0.05,
+            ActionType.APPROVE: -0.15,
+            ActionType.BRIDGE: -0.20,
+            ActionType.DEPLOY: -0.18,
+            ActionType.MINT: -0.25,
+            ActionType.BURN: -0.22,
+            ActionType.CALL: -0.10,
+            ActionType.UNKNOWN: -0.30,
+        }
+        mod = risk_mods.get(action.action_type, -0.10)
+
+        # Value modifier (large values are less coherent for new agents)
+        value_mod = 0.0
+        limit = self.VALUE_LIMITS[agent.trust_level]
+        if limit > 0 and action.value_usd > 0:
+            ratio = min(1.0, action.value_usd / limit)
+            value_mod = -ratio * 0.2
+
+        # Frequency penalty (too many actions too fast)
+        freq_mod = 0.0
+        history = agent.behavioral_history[-10:]
+        if len(history) >= 5:
+            avg_recent = sum(history[-5:]) / 5
+            if avg_recent < 0.4:
+                freq_mod = -0.15
+
+        coherence = base + mod + value_mod + freq_mod
+        return round(max(0.0, min(1.0, coherence)), 4)
+
+    def _compute_risk_score(self, action: AgentAction) -> float:
+        risk = 0.0
+
+        # High-value actions are riskier
+        if action.value_usd > 1_000_000:
+            risk += 0.4
+        elif action.value_usd > 100_000:
+            risk += 0.25
+        elif action.value_usd > 10_000:
+            risk += 0.10
+
+        # Risky action types
+        risky = {
+            ActionType.BRIDGE: 0.30,
+            ActionType.MINT: 0.35,
+            ActionType.DEPLOY: 0.25,
+            ActionType.BURN: 0.20,
+            ActionType.APPROVE: 0.15,
+
+---END---
+
+===== src/auditor/contract_auditor.py =====
+"""
+TRION On-Chain Contract Auditor
+================================
+Reads any contract address from any supported chain, extracts behavioral
+features, compares against the vulnerability pattern library and Akashic
+Index archetypes, and produces a structured audit report with:
+  - Risk score (0.0 = safe, 1.0 = critical)
+  - Matched vulnerability archetypes
+  - CRISPR patch suggestions
+  - FAISS similarity to historical exploits
+  - Epigenetic change analysis (behavior drift over time)
+"""
+
+import hashlib
+import json
+import time
+import math
+import logging
+import sys
+import os
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, asdict
+
+import numpy as np
+import requests
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+
+from src.auditor.vulnerability_patterns import (
+    VULNERABILITY_LIBRARY, VulnerabilityPattern,
+    get_phi_matrix, SEVERITY_SCORES
+)
+from src.core.coherence_engine import CoherenceEngine
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AuditFinding:
+    pattern_id: str
+    pattern_name: str
+    severity: str
+    category: str
+    confidence: float          # 0-1 match confidence
+    description: str
+    evidence: List[str]
+    prevention: str
+    crispr_suggestion: str
+    similar_exploits: List[str]
+
+
+@dataclass
+class AuditReport:
+    address: str
+    chain_id: int
+    chain_name: str
+    timestamp: int
+    risk_score: float          # 0.0 (safe) → 1.0 (critical)
+    risk_label: str            # SAFE | LOW | MEDIUM | HIGH | CRITICAL
+    coherence_score: float     # C(t) estimate for the contract
+    archetype: str             # closest behavioral archetype
+    archetype_distance: float  # distance from archetype centroid
+    findings: List[AuditFinding]
+    tx_stats: Dict
+    behavioral_summary: str
+    epigenetic_drift: float    # how much behavior changed vs. 30-day baseline
+    lifecycle_stage: str       # BIRTH | GROWTH | MATURITY | DECLINE | DEATH
+    ubl_vector: List[float]    # Universal Behavioral Language encoding
+    patch_priority: List[str]  # ordered CRISPR patches to apply
+    attestation_hash: str      # tamper-proof audit fingerprint
+
+
+# RPC endpoints per chain
+CHAIN_RPCS = {
+    1:       "https://eth.llamarpc.com",
+    42161:   "https://arb1.arbitrum.io/rpc",
+    8453:    "https://mainnet.base.org",
+    10:      "https://mainnet.optimism.io",
+    56:      "https://bsc-dataseed.binance.org",
+    137:     "https://polygon-rpc.com",
+    43114:   "https://api.avax.network/ext/bc/C/rpc",
+    421614:  "https://sepolia-rollup.arbitrum.io/rpc",
+    84532:   "https://sepolia.base.org",
+    11155111: "https://rpc.sepolia.org",
+    97:      "https://data-seed-prebsc-1-s1.binance.org:8545",
+    177:     "https://mainnet.hsk.xyz",
+    16602:   "https://evmrpc-testnet.0g.ai",
+}
+
+CHAIN_NAMES = {
+    1: "Ethereum", 42161: "Arbitrum", 8453: "Base", 10: "Optimism",
+    56: "BNB Chain", 137: "Polygon", 43114: "Avalanche",
+    421614: "Arbitrum Sepolia", 84532: "Base Sepolia",
+    11155111: "Ethereum Sepolia", 97: "BNB Testnet",
+    177: "HashKey", 16602: "0G Galileo",
+}
+
+
+class ContractAuditor:
+    def __init__(self, faiss_url: str = "http://127.0.0.1:8000"):
+        self.faiss_url = faiss_url
+        self.coherence_engine = CoherenceEngine()
+        self._vuln_phi_matrix = get_phi_matrix()
+
+    def _rpc_call(self, chain_id: int, method: str, params: list) -> Optional[dict]:
+        # Skip live RPC unless TRION_LIVE=1 — avoids hanging in sandbox/test environments
+        if not os.environ.get("TRION_LIVE"):
+            return None
+        rpc = CHAIN_RPCS.get(chain_id)
+        if not rpc:
+            return None
+        try:
+            r = requests.post(rpc, json={
+                "jsonrpc": "2.0", "id": 1,
+                "method": method, "params": params
+            }, timeout=1.5)
+            data = r.json()
+            return data.get("result")
+        except Exception as e:
+            logger.warning(f"RPC error on chain {chain_id}: {e}")
+            return None
+
+    def _get_bytecode(self, address: str, chain_id: int) -> str:
+        result = self._rpc_call(chain_id, "eth_getCode", [address, "latest"])
+        return result or "0x"
+
+    def _get_tx_history(self, address: str, chain_id: int) -> List[dict]:
+        # Get recent block range and scan for txs to/from contract
+        block_result = self._rpc_call(chain_id, "eth_blockNumber", [])
+        if not block_result:
+            return []
+        latest = int(block_result, 16)
+        scan_from = max(0, latest - 500)
+        # Use eth_getLogs to get events
+        try:
+            logs = self._rpc_call(chain_id, "eth_getLogs", [{
+                "address": address,
+                "fromBlock": hex(scan_from),
+                "toBlock": "latest"
+            }]) or []
+            return logs[:200]
+        except Exception:
+            return []
+
+    def _get_storage_slots(self, address: str, chain_id: int) -> Dict[str, str]:
+        slots = {}
+        for i in range(5):
+            slot = hex(i).replace("0x", "").zfill(64)
+            val = self._rpc_call(chain_id, "eth_getStorageAt", [address, "0x" + slot, "latest"])
+            if val and val != "0x" + "0" * 64:
+                slots[f"slot_{i}"] = val
+        return slots
+
+    def _analyze_bytecode(self, bytecode: str) -> Dict:
+        if bytecode in ("0x", "", None):
+            return {"is_eoa": True, "opcode_counts": {}, "has_delegatecall": False,
+                    "has_selfdestruct": False, "has_create": False, "call_count": 0}
+
+        code = bytecode.lower().replace("0x", "")
+        analysis = {
+            "is_eoa": False,
+            "length": len(code) // 2,
+            "has_delegatecall": "f4" in code,
+            "has_selfdestruct": "ff" in code,
+            "has_create": "f0" in code or "f5" in code,
+            "has_call": "f1" in code,
+            "has_staticcall": "fa" in code,
+            "has_timestamp": "42" in code,
+            "has_origin": "32" in code,
+            "call_count": code.count("f1"),
+            "jump_count": code.count("56"),
+            "sload_count": code.count("54"),
+            "sstore_count": code.count("55"),
+        }
+
+        # Detect proxy pattern
+        analysis["is_proxy"] = analysis["has_delegatecall"] and len(code) < 200
+        # Detect ERC-20 selectors
+        analysis["is_erc20"] = "a9059cbb" in code  # transfer()
+        analysis["is_erc721"] = "42842e0e" in code  # safeTransferFrom()
+        # Detect mint backdoor
+        analysis["has_mint"] = "40c10f19" in code or "a9059cbb" in code
+
+        return analysis
+
+    def _extract_phi_vector(self, tx_logs: List[dict], bytecode_analysis: Dict) -> np.ndarray:
+        n = max(len(tx_logs), 1)
+        # f1: tx volume entropy
+        values = [int(log.get("data", "0x0") or "0x0", 16) for log in tx_logs[:100]]
+        values = [v for v in values if v > 0] or [1]
+        total = sum(values) + 1e-10
+        probs = [v / total for v in values]
+        h1 = -sum(p * math.log2(p + 1e-10) for p in probs)
+        max_h = math.log2(len(probs) + 1)
+        f1 = min(1.0, h1 / (max_h + 1e-10))
+
+        # f2: call complexity
+        f2 = min(1.0, bytecode_analysis.get("call_count", 0) / 20.0)
+
+        # f3: storage density
+
+---END---
+
+===== src/auditor/vulnerability_patterns.py =====
+"""
+TRION Contract Vulnerability Patterns
+Encodes 25 known attack/vulnerability archetypes as behavioral signatures.
+Each pattern has: bytecode markers, tx behavioral signature, entropy profile,
+coherence impact, and FAISS-compatible 9-dim Phi vector.
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional
+import numpy as np
+
+
+@dataclass
+class VulnerabilityPattern:
+    id: str
+    name: str
+    category: str           # structural | behavioral | economic | governance
+    severity: str           # CRITICAL | HIGH | MEDIUM | LOW
+    description: str
+    bytecode_markers: List[str]      # hex signatures in bytecode
+    tx_behavioral_signature: Dict    # expected tx pattern fingerprint
+    phi_vector: List[float]          # 9-dim reference Phi vector (normalized)
+    coherence_impact: float          # how much C(t) drops if triggered
+    known_exploits: List[str]        # historical exploit names
+    prevention: str
+    crispr_suggestion: str           # patch suggestion
+
+
+VULNERABILITY_LIBRARY: List[VulnerabilityPattern] = [
+
+    VulnerabilityPattern(
+        id="VULN_001",
+        name="Reentrancy Attack",
+        category="structural",
+        severity="CRITICAL",
+        description="External call before state update allows recursive re-entry draining funds.",
+        bytecode_markers=["f0", "f1", "f2", "f4"],  # CALL opcodes
+        tx_behavioral_signature={
+            "recursive_depth": ">3",
+            "call_before_state": True,
+            "value_drain_ratio": ">0.8"
+        },
+        phi_vector=[0.95, 0.85, 0.90, 0.78, 0.12, 0.05, 0.92, 0.88, 0.91],
+        coherence_impact=0.92,
+        known_exploits=["The DAO ($60M)", "Lendf.me ($25M)", "Cream Finance ($18M)"],
+        prevention="CEI pattern: Checks → Effects → Interactions. Use ReentrancyGuard.",
+        crispr_suggestion="Add nonReentrant modifier. Move state updates before external calls."
+    ),
+
+    VulnerabilityPattern(
+        id="VULN_002",
+        name="Flash Loan Price Manipulation",
+        category="economic",
+        severity="CRITICAL",
+        description="Borrow massive liquidity, manipulate AMM price, drain protocol in single tx.",
+        bytecode_markers=["d0", "d1"],
+        tx_behavioral_signature={
+            "borrow_repay_single_tx": True,
+            "price_delta_pct": ">20",
+            "volume_spike_ratio": ">50x"
+        },
+        phi_vector=[0.98, 0.92, 0.88, 0.95, 0.03, 0.02, 0.97, 0.94, 0.96],
+        coherence_impact=0.95,
+        known_exploits=["bZx ($600K)", "Harvest Finance ($34M)", "Mango Markets ($114M)"],
+        prevention="TWAP oracle instead of spot price. Flash loan guard.",
+        crispr_suggestion="Replace spot price oracle with 30-min TWAP. Add flashloan callback guard."
+    ),
+
+    VulnerabilityPattern(
+        id="VULN_003",
+        name="Rugpull / Liquidity Drain",
+        category="behavioral",
+        severity="CRITICAL",
+        description="Team or whale removes all liquidity suddenly, collapsing token price.",
+        bytecode_markers=[],
+        tx_behavioral_signature={
+            "lp_removal_pct": ">90",
+            "dev_wallet_drain": True,
+            "timing": "post_pump"
+        },
+        phi_vector=[0.72, 0.68, 0.91, 0.55, 0.88, 0.82, 0.70, 0.65, 0.89],
+        coherence_impact=0.98,
+        known_exploits=["Squid Game Token ($3.3M)", "Thodex ($2B)", "AnubisDAO ($60M)"],
+        prevention="Locked liquidity. Time-locked admin functions. Multi-sig.",
+        crispr_suggestion="Implement liquidity lock with 1-year minimum. Add team vesting contract."
+    ),
+
+    VulnerabilityPattern(
+        id="VULN_004",
+        name="Integer Overflow / Underflow",
+        category="structural",
+        severity="HIGH",
+        description="Arithmetic wraps around causing balance inflation or unexpected state.",
+        bytecode_markers=["01", "02", "03"],  # ADD, MUL, SUB
+        tx_behavioral_signature={
+            "balance_anomaly": True,
+            "wrap_around_detected": True
+        },
+        phi_vector=[0.55, 0.45, 0.60, 0.40, 0.20, 0.15, 0.58, 0.42, 0.55],
+        coherence_impact=0.65,
+        known_exploits=["Beauty Chain BEC ($900M)", "SMT Token"],
+        prevention="Use SafeMath or Solidity >=0.8.0 built-in overflow checks.",
+        crispr_suggestion="Upgrade to Solidity ^0.8.0 or wrap all arithmetic with SafeMath."
+    ),
+
+    VulnerabilityPattern(
+        id="VULN_005",
+        name="Access Control Missing",
+        category="structural",
+        severity="HIGH",
+        description="Critical functions lack proper authorization checks.",
+        bytecode_markers=["33", "54"],  # CALLER, SLOAD
+        tx_behavioral_signature={
+            "admin_fn_called_by_anyone": True,
+            "ownership_bypass": True
+        },
+        phi_vector=[0.60, 0.55, 0.50, 0.65, 0.30, 0.25, 0.58, 0.52, 0.60],
+        coherence_impact=0.75,
+        known_exploits=["Parity Multisig ($31M)", "Poly Network ($600M)"],
+        prevention="Use OpenZeppelin Ownable/AccessControl. Audit all external functions.",
+        crispr_suggestion="Add onlyOwner or role-based modifiers to all privileged functions."
+    ),
+
+    VulnerabilityPattern(
+        id="VULN_006",
+        name="Oracle Manipulation",
+        category="economic",
+        severity="CRITICAL",
+        description="Price or data oracle can be manipulated by single actor.",
+        bytecode_markers=[],
+        tx_behavioral_signature={
+            "oracle_price_deviation": ">15pct",
+            "manipulation_window": "<3_blocks",
+            "sandwich_pattern": True
+        },
+        phi_vector=[0.88, 0.82, 0.75, 0.90, 0.05, 0.04, 0.85, 0.80, 0.88],
+        coherence_impact=0.88,
+        known_exploits=["Euler Finance ($197M)", "Mango Markets ($114M)", "Rodeo ($1.5M)"],
+        prevention="Chainlink TWAP. Multi-source oracle aggregation. Circuit breakers.",
+        crispr_suggestion="Replace single oracle with Chainlink + TWAP fallback. Add 10% deviation circuit breaker."
+    ),
+
+    VulnerabilityPattern(
+        id="VULN_007",
+        name="Front-Running / MEV Sandwich",
+        category="behavioral",
+        severity="MEDIUM",
+        description="Transactions can be observed in mempool and front-run for profit.",
+        bytecode_markers=[],
+        tx_behavioral_signature={
+            "mempool_observation": True,
+            "sandwich_tx_triplet": True,
+            "slippage_exploit": ">5pct"
+        },
+        phi_vector=[0.70, 0.65, 0.55, 0.60, 0.45, 0.40, 0.68, 0.62, 0.72],
+        coherence_impact=0.45,
+        known_exploits=["Generalized MEV ($1B+ annually)", "Uniswap slippage"],
+        prevention="Commit-reveal schemes. Flashbots. Slippage protection.",
+        crispr_suggestion="Implement commit-reveal or use private mempool (Flashbots Protect)."
+    ),
+
+    VulnerabilityPattern(
+        id="VULN_008",
+        name="Governance Attack",
+        category="governance",
+        severity="HIGH",
+        description="Proposal and vote manipulation to pass malicious governance actions.",
+        bytecode_markers=[],
+        tx_behavioral_signature={
+            "vote_concentration": ">67pct_single_wallet",
+            "flash_governance": True,
+            "proposal_exploit": True
+        },
+        phi_vector=[0.65, 0.70, 0.45, 0.80, 0.60, 0.55, 0.62, 0.68, 0.65],
+        coherence_impact=0.80,
+        known_exploits=["Beanstalk ($182M)", "Build Finance hostile takeover"],
+        prevention="Voting delay. Time-locks. Quorum requirements. Vote delegation limits.",
+        crispr_suggestion="Add 48h voting delay, 72h timelock, 10% quorum, 20% single-wallet cap."
+    ),
+
+    VulnerabilityPattern(
+        id="VULN_009",
+        name="Wash Trading",
+        category="behavioral",
+        severity="MEDIUM",
+        description="Artificial volume creation through circular self-trading.",
+        bytecode_markers=[],
+        tx_behavioral_signature={
+            "circular_flow": True,
+            "same_wallet_pair": True,
+            "volume_without_net_change": ">80pct"
+        },
+        phi_vector=[0.35, 0.30, 0.80, 0.25, 0.75, 0.70, 0.32, 0.28, 0.78],
+        coherence_impact=0.55,
+        known_exploits=["NFT wash trading ($8B+)", "CEX volume inflation"],
+        prevention="Track net balance change vs gross volume. Sybil detection.",
+        crispr_suggestion="Implement volume authenticity scoring: penalize circular flows."
+    ),
+
+    VulnerabilityPattern(
+
+---END---
+
+===== src/consensus/diversity_weighted_bft.py =====
+"""
+TRION Protocol — L4.1 / L4.2 / L4.3
+Diversity-Weighted Byzantine Fault-Tolerant Consensus
+
+Whitepaper formulas (V1.0, Level 4):
+
+L4.1 Diversity Weight:
+    d_j = 1 - corr(M_j, M̄)
+    M_j = validator j model output vector
+    M̄   = median output vector across all validators
+    High correlation → d_j → 0  (coordination is self-defeating)
+    Full independence → d_j → 1 (maximum contribution)
+
+L4.2 Spiritual Consensus Score:
+    Σ(t) = Σⱼ [sⱼ · dⱼ · 𝟙(|vⱼ − v̄| ≤ δ)] / Σⱼ [sⱼ · dⱼ]
+    sⱼ = stake weight
+    dⱼ = diversity weight
+    𝟙  = 1 if validator within consensus window δ, 0 otherwise
+    v̄  = stake-diversity-weighted mean valuation
+
+L4.3 BFT Safety Condition:
+    Safety holds iff  Σ_{honest} sⱼ · dⱼ  >  (2/3) · Σ_{all} sⱼ · dⱼ
+    Byzantine coordination → corr(M_j, M̄) → 1 → d_j → 0
+    lim_{coordination→1} Σ_{Byzantine} sⱼ · dⱼ = 0
+    Attack is structurally self-defeating.
+
+HHI Diversity Health:
+    HHI = Σⱼ (sⱼ · dⱼ / Σ_total)² × 10000
+    Healthy: HHI < 1500
+    Warning: HHI 1500–2500
+    Critical: HHI > 2500
+
+Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+License: CC0
+"""
+
+from __future__ import annotations
+
+import math
+import statistics
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+
+@dataclass
+class Validator:
+    """A single validator's state."""
+    validator_id:    str
+    stake:           float        # sⱼ — TRION stake weight
+    model_outputs:   List[float]  # Mⱼ — recent valuation output vector (rolling window)
+    valuation:       float        # vⱼ — current submitted valuation
+    model_arch:      str          # Transformer | LSTM | GNN | Hybrid
+    geography:       str          # continent
+    is_byzantine:    bool = False
+
+
+@dataclass
+class DiversityResult:
+    """Per-validator diversity computation."""
+    validator_id:      str
+    stake:             float
+    diversity_weight:  float     # dⱼ = 1 - corr(Mⱼ, M̄)
+    correlation:       float     # corr(Mⱼ, M̄)
+    effective_weight:  float     # sⱼ · dⱼ
+    within_consensus:  bool      # |vⱼ − v̄| ≤ δ
+    model_arch:        str
+    geography:         str
+
+
+@dataclass
+class BFTConsensusResult:
+    """Full DW-BFT consensus output."""
+    sigma:                   float          # Σ(t) ∈ [0,1]
+    consensus_value:         float          # v̄ stake-diversity-weighted mean
+    consensus_window:        float          # δ agreement band
+    total_effective_stake:   float          # Σⱼ sⱼ·dⱼ
+    honest_effective_stake:  float          # Σ_{within_window} sⱼ·dⱼ
+    safety_holds:            bool           # honest > (2/3) total
+    safety_margin:           float          # honest_eff - (2/3)*total_eff
+    hhi:                     float          # HHI diversity concentration index
+    hhi_health:              str            # HEALTHY / WARNING / CRITICAL
+    validator_count:         int
+    validators_in_consensus: int
+    diversity_results:       List[DiversityResult]
+    byzantine_effective_weight: float       # how much weight byzantine have
+    self_defeating_proof:    str            # formal statement
+    whitepaper_formula:      str
+
+
+def _pearson_corr(x: List[float], y: List[float]) -> float:
+    """Pearson correlation coefficient between two vectors."""
+    n = min(len(x), len(y))
+    if n < 2:
+        return 0.0
+    x, y = x[:n], y[:n]
+    mx, my = sum(x) / n, sum(y) / n
+    cov  = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y))
+    vx   = sum((xi - mx) ** 2 for xi in x)
+    vy   = sum((yi - my) ** 2 for yi in y)
+    if vx <= 0 or vy <= 0:
+        return 0.0
+    return max(-1.0, min(1.0, cov / math.sqrt(vx * vy)))
+
+
+def _median_vector(validators: List[Validator]) -> List[float]:
+    """
+    Compute element-wise median output vector M̄ across all validators.
+    Each position is the median of that position's values across all validator output vectors.
+    """
+    if not validators:
+        return []
+    n_outputs = min(len(v.model_outputs) for v in validators)
+    if n_outputs == 0:
+        return []
+    median_vec = []
+    for i in range(n_outputs):
+        vals = [v.model_outputs[i] for v in validators if i < len(v.model_outputs)]
+        median_vec.append(statistics.median(vals))
+    return median_vec
+
+
+def compute_diversity_weights(validators: List[Validator]) -> List[DiversityResult]:
+    """
+    L4.1: d_j = 1 - corr(M_j, M̄)
+
+    Builds the median model M̄ then computes each validator's correlation with it.
+    High correlation = low diversity weight = coordination is self-defeating.
+    """
+    median_vec = _median_vector(validators)
+
+    results = []
+    for v in validators:
+        if not v.model_outputs or not median_vec:
+            corr = 0.0
+        else:
+            corr = _pearson_corr(v.model_outputs, median_vec)
+
+        d_j = max(0.0, 1.0 - corr)
+        results.append(DiversityResult(
+            validator_id     = v.validator_id,
+            stake            = v.stake,
+            diversity_weight = d_j,
+            correlation      = corr,
+            effective_weight = v.stake * d_j,
+            within_consensus = False,   # set in consensus step
+            model_arch       = v.model_arch,
+            geography        = v.geography,
+        ))
+    return results
+
+
+def compute_dw_bft_consensus(
+    validators:        List[Validator],
+    delta:             float = 0.05,    # consensus agreement band width
+) -> BFTConsensusResult:
+    """
+    L4.2: Σ(t) = Σⱼ [sⱼ · dⱼ · 𝟙(|vⱼ − v̄| ≤ δ)] / Σⱼ [sⱼ · dⱼ]
+
+    Step 1: compute diversity weights d_j for all validators
+    Step 2: compute stake-diversity-weighted mean valuation v̄
+    Step 3: determine which validators fall within consensus window
+    Step 4: compute Σ(t) = weighted fraction in consensus
+    Step 5: check L4.3 BFT safety condition
+    Step 6: compute HHI diversity concentration index
+    """
+    if not validators:
+        return BFTConsensusResult(
+            sigma=0.0, consensus_value=0.0, consensus_window=delta,
+            total_effective_stake=0.0, honest_effective_stake=0.0,
+            safety_holds=False, safety_margin=0.0,
+            hhi=10000.0, hhi_health="CRITICAL",
+            validator_count=0, validators_in_consensus=0,
+            diversity_results=[], byzantine_effective_weight=0.0,
+            self_defeating_proof="No validators.",
+            whitepaper_formula="Σ(t) = Σⱼ [sⱼ·dⱼ·𝟙(|vⱼ−v̄|≤δ)] / Σⱼ [sⱼ·dⱼ]",
+        )
+
+    # Step 1: diversity weights
+    div_results = compute_diversity_weights(validators)
+    total_eff   = sum(r.effective_weight for r in div_results)
+
+    # Step 2: stake-diversity-weighted mean valuation v̄
+    if total_eff <= 0:
+        v_bar = statistics.mean(v.valuation for v in validators)
+    else:
+        v_bar = sum(
+            v.valuation * r.effective_weight
+            for v, r in zip(validators, div_results)
+        ) / total_eff
+
+    # Step 3: consensus window membership 𝟙(|vⱼ − v̄| ≤ δ)
+    for v, r in zip(validators, div_results):
+        r.within_consensus = abs(v.valuation - v_bar) <= delta
+
+    # Step 4: Σ(t)
+    honest_eff = sum(
+        r.effective_weight for r in div_results if r.within_consensus
+    )
+    sigma = honest_eff / total_eff if total_eff > 0 else 0.0
+
+
+---END---
+
+===== src/governance/awa_state.py =====
+"""
+TRION Protocol — AWA Enforcement State Machine + Gratitude Protocol + Bootstrap Protocol
+Chapter 14: Governance Architecture
+
+AWA (Adaptive Watchdog Architecture) — enforces network-level behavioral standards.
+AWA is enforced iff ALL conditions are simultaneously met:
+  1. consensus_quorum >= 2/3 of validator stake-weight
+  2. validator_hhi < 4000 (CRITICAL threshold — see sigma_engine.py)
+  3. gratitude_score >= 1 (at least 1 Gratitude Protocol signal in last 30 days)
+  4. public_good_minimum >= 0.15 (15% of protocol capacity reserved for public good)
+
+Gratitude Protocol:
+  Entities that VOLUNTARILY disclose exploitable vulnerabilities they could have
+  used for personal gain receive Gratitude Protocol credits.
+  gratitude_score += 1.0 per verified disclosure
+  gratitude_score decays at 0.95/week
+
+Bootstrap Protocol Weight:
+  During the bootstrap phase, classical security weight applies:
+  bootstrap_weight(t) = e^(-λ_boot · D(t))
+  λ_boot = 0.0001
+  As Akashic depth D(t) grows, bootstrap weight decays to zero —
+  living security fully replaces classical security.
+  Transition is complete when bootstrap_weight < 0.01 (D > ~46,000)
+
+AWA State:
+  ENFORCED   — all 4 conditions met, AWA active
+  SUSPENDED  — quorum or HHI condition failed
+  DEGRADED   — gratitude or public_good condition not met
+  EMERGENCY  — HHI > 4000 (validator concentration CRITICAL)
+
+Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+License: CC0
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
+
+
+LAMBDA_BOOT     = 0.0001
+BOOTSTRAP_FLOOR = 0.01
+AWA_QUORUM      = 2.0 / 3.0
+AWA_HHI_MAX     = 4000
+AWA_GRATITUDE_MIN = 1.0
+AWA_PUBLIC_GOOD_MIN = 0.15
+
+GRATITUDE_DECAY_PER_WEEK = 0.95
+GRATITUDE_WINDOW_DAYS    = 30
+
+
+@dataclass
+class GratitudeEvent:
+    """A verified vulnerability disclosure under the Gratitude Protocol."""
+    entity_id:        str
+    disclosed_at:     float
+    vulnerability_id: str
+    severity:         str         # CRITICAL/HIGH/MEDIUM/LOW
+    credit:           float       # Gratitude credit earned (1.0 default)
+    verified:         bool
+    description:      str
+
+
+@dataclass
+class AWAState:
+    """Current state of the AWA enforcement system."""
+    enforced:         bool
+    status:           str         # ENFORCED|SUSPENDED|DEGRADED|EMERGENCY
+    consensus_quorum: float       # Current quorum fraction [0,1]
+    validator_hhi:    float       # Current validator HHI
+    gratitude_score:  float       # Current gratitude score (decayed)
+    public_good_pct:  float       # Current public good fraction [0,1]
+    bootstrap_weight: float       # Current bootstrap weight [0,1]
+    akashic_depth:    float       # Current Akashic depth
+    conditions_met:   Dict[str, bool]
+    failing_conditions: List[str]
+    timestamp:        float
+    disclosure:       str
+
+
+class GratitudeProtocol:
+    """
+    Tracks Gratitude Protocol events.
+    Entities that voluntarily disclose exploitable vulnerabilities earn gratitude credits.
+    Score decays at 0.95/week — requires ongoing participation.
+    """
+
+    def __init__(self):
+        self._events:      List[GratitudeEvent] = []
+        self._entity_scores: Dict[str, float] = {}
+
+    def record_disclosure(
+        self,
+        entity_id:        str,
+        vulnerability_id: str,
+        severity:         str = "MEDIUM",
+        description:      str = "",
+        credit:           float = 1.0,
+        verified:         bool = True,
+        timestamp:        Optional[float] = None,
+    ) -> GratitudeEvent:
+        ts = timestamp or time.time()
+        severity_multiplier = {"CRITICAL": 2.0, "HIGH": 1.5, "MEDIUM": 1.0, "LOW": 0.5}.get(severity, 1.0)
+        final_credit = credit * severity_multiplier if verified else 0.0
+
+        event = GratitudeEvent(
+            entity_id        = entity_id,
+            disclosed_at     = ts,
+            vulnerability_id = vulnerability_id,
+            severity         = severity,
+            credit           = final_credit,
+            verified         = verified,
+            description      = description,
+        )
+        self._events.append(event)
+        self._entity_scores[entity_id] = self._entity_scores.get(entity_id, 0.0) + final_credit
+        return event
+
+    def compute_network_gratitude(self, now: Optional[float] = None) -> float:
+        """
+        Network gratitude score: sum of all credits in last 30 days, decay-adjusted.
+        Decay: 0.95 per week elapsed since disclosure.
+        """
+        now = now or time.time()
+        cutoff = now - GRATITUDE_WINDOW_DAYS * 86400
+        score = 0.0
+        for event in self._events:
+            if not event.verified or event.disclosed_at < cutoff:
+                continue
+            weeks_elapsed = (now - event.disclosed_at) / (7 * 86400)
+            decayed_credit = event.credit * (GRATITUDE_DECAY_PER_WEEK ** weeks_elapsed)
+            score += decayed_credit
+        return round(score, 4)
+
+    def get_entity_score(self, entity_id: str) -> float:
+        return self._entity_scores.get(entity_id, 0.0)
+
+    def recent_events(self, days: int = 30) -> List[dict]:
+        cutoff = time.time() - days * 86400
+        return [
+            {
+                "entity_id":        e.entity_id,
+                "vulnerability_id": e.vulnerability_id,
+                "severity":         e.severity,
+                "credit":           e.credit,
+                "verified":         e.verified,
+                "disclosed_at":     int(e.disclosed_at),
+                "description":      e.description,
+            }
+            for e in self._events
+            if e.disclosed_at >= cutoff
+        ]
+
+
+class BootstrapProtocol:
+    """
+    Bootstrap Protocol: manages the transition from classical to living security.
+    bootstrap_weight(t) = e^(-λ_boot · D(t))
+    λ_boot = 0.0001
+
+    At D=0: weight=1.0 (fully classical)
+    At D=10,000: weight≈0.37 (partial)
+    At D=46,000: weight≈0.01 (transition nearly complete)
+    At D=∞: weight→0 (fully living security)
+    """
+
+    LAMBDA = LAMBDA_BOOT
+
+    def compute_weight(self, akashic_depth: float) -> float:
+        """bootstrap_weight(t) = e^(-λ · D(t))"""
+        return math.exp(-self.LAMBDA * max(0.0, akashic_depth))
+
+    def security_mix(self, akashic_depth: float) -> dict:
+        w = self.compute_weight(akashic_depth)
+        return {
+            "bootstrap_weight":   round(w, 6),
+            "living_weight":      round(1.0 - w, 6),
+            "transition_complete": w < BOOTSTRAP_FLOOR,
+            "depth_for_full_transition": int(-math.log(BOOTSTRAP_FLOOR) / self.LAMBDA),
+            "akashic_depth":      akashic_depth,
+            "stage": (
+                "CLASSICAL"  if w > 0.80 else
+                "TRANSITION" if w > BOOTSTRAP_FLOOR else
+                "LIVING"
+            ),
+        }
+
+
+class AWAEnforcer:
+    """
+    AWA Enforcement State Machine.
+    Evaluates all 4 AWA conditions and determines enforcement state.
+    """
+
+    def __init__(self):
+        self.gratitude    = GratitudeProtocol()
+        self.bootstrap    = BootstrapProtocol()
+
+---END---
+
+===== src/governance/falsifiability_registry.py =====
+"""
+TRION Protocol — Falsifiability Registry (F1–F15)
+Chapter 14.2: Falsifiability Conditions
+
+The 15 falsifiability conditions that would invalidate the TRION model.
+Each condition is tracked with its current status and monitoring data.
+
+These are NOT marketing claims — they are explicit conditions under which
+the whitepaper authors acknowledge the model would be WRONG.
+
+Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+License: CC0
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
+
+
+@dataclass
+class FalsifiabilityCondition:
+    id:          str         # F1–F15
+    description: str
+    test_metric: str
+    threshold:   str
+    status:      str         # MONITORING | PASSING | FAILING | UNTESTED
+    plane:       str         # Which whitepaper layer this tests
+    sample_size: int
+    last_check:  float
+    notes:       str
+
+
+FALSIFIABILITY_CONDITIONS: List[FalsifiabilityCondition] = [
+    FalsifiabilityCondition(
+        id="F1",
+        description="Manipulation fingerprint (MF=1.0) scores must correspond to verified oracle attack patterns in ≥95% of cases within a 10-block analysis window.",
+        test_metric="MF precision @ oracle_attack",
+        threshold="≥95% precision",
+        status="MONITORING",
+        plane="L2.1 Manipulation Fingerprint",
+        sample_size=0,
+        last_check=time.time(),
+        notes="Requires live oracle attack dataset. Bootstrap phase — insufficient confirmed attack samples.",
+    ),
+    FalsifiabilityCondition(
+        id="F2",
+        description="SILENCE events must precede 85% or more of confirmed BLOCK/REJECT events in historical backtests.",
+        test_metric="SILENCE→BLOCK precede rate",
+        threshold="≥85% over 90d backtests",
+        status="MONITORING",
+        plane="L5 Coherence Gate",
+        sample_size=0,
+        last_check=time.time(),
+        notes="Accumulating backtest data. Signal feed growing.",
+    ),
+    FalsifiabilityCondition(
+        id="F3",
+        description="C(t) < 0.55 (below minimum threshold) must predict asset underperformance vs market benchmark by >20% within 30 days.",
+        test_metric="C(t)<0.55 → underperformance rate",
+        threshold=">20% underperformance within 30d",
+        status="MONITORING",
+        plane="L5 Coherence C(t)",
+        sample_size=0,
+        last_check=time.time(),
+        notes="Requires 30-day follow-up data on SILENCE signals. Currently monitoring.",
+    ),
+    FalsifiabilityCondition(
+        id="F4",
+        description="ANIMA signals with CA>0.8 must show 90-day calibration accuracy ≥75%.",
+        test_metric="ANIMA CA>0.8 calibration score",
+        threshold="≥75% calibration over 90d",
+        status="MONITORING",
+        plane="L3.3 ANIMA A(t)",
+        sample_size=0,
+        last_check=time.time(),
+        notes="ANIMA at bootstrap (D_minimum=10,000 not reached in testnet phase). CA calibration tracking active.",
+    ),
+    FalsifiabilityCondition(
+        id="F5",
+        description="BRT window predictions must exceed random baseline by >15% over a 90-day sample period.",
+        test_metric="BRT vs random baseline improvement",
+        threshold=">15% improvement over 90d",
+        status="CONJECTURE",
+        plane="L6.2 Biological Rhythm Timer",
+        sample_size=0,
+        last_check=time.time(),
+        notes="BRT labeled CONJECTURE until this condition validated. 90-day sample not yet complete.",
+    ),
+    FalsifiabilityCondition(
+        id="F6",
+        description="XSL decline detection must trigger within 72h of confirmed on-chain behavioral shift events.",
+        test_metric="XSL decline detection latency",
+        threshold="Detection within 72h",
+        status="MONITORING",
+        plane="L9.1 Cross-Species Liquidity",
+        sample_size=0,
+        last_check=time.time(),
+        notes="XSL engine active. F6 validation requires confirmed behavioral shift ground truth.",
+    ),
+    FalsifiabilityCondition(
+        id="F7",
+        description="Source credibility (CRED) scores must converge to true prediction accuracy within 180 days of continuous operation.",
+        test_metric="CRED vs realized accuracy correlation",
+        threshold="corr(CRED, accuracy) > 0.70 at 180d",
+        status="MONITORING",
+        plane="L3.4 Source Credibility",
+        sample_size=0,
+        last_check=time.time(),
+        notes="CRED decay active (α=0.99/day). Convergence tracking requires 180-day window.",
+    ),
+    FalsifiabilityCondition(
+        id="F8",
+        description="Genomic key evolution must produce distinct (non-colliding) signatures for each generation with probability ≥1-2^(-128).",
+        test_metric="GK collision rate",
+        threshold="collision_rate < 2^-128",
+        status="PASSING",
+        plane="L4.3 Genomic Key",
+        sample_size=10000,
+        last_check=time.time(),
+        notes="SHA3-256 based GK evolution provides 256-bit collision resistance. Formal: PASSING.",
+    ),
+    FalsifiabilityCondition(
+        id="F9",
+        description="Information conservation must hold within 1e-6 tolerance at every Akashic Index append operation.",
+        test_metric="Conservation deviation",
+        threshold="deviation < 1e-6 per operation",
+        status="PASSING",
+        plane="L9.2 Information Conservation",
+        sample_size=10000,
+        last_check=time.time(),
+        notes="AkashicConservationLedger enforces conservation at every BH append. "
+              "Verified in unit test suite (test_information_conservation, test_stress.py). "
+              "10,000 operations confirmed; all within 1e-6 tolerance. PASSING.",
+    ),
+    FalsifiabilityCondition(
+        id="F10",
+        description="SBA(nation) predictions must show ≥70% alignment with sovereign credit spread movements over 90-day windows.",
+        test_metric="SBA vs credit spread alignment",
+        threshold="≥70% alignment over 90d",
+        status="MONITORING",
+        plane="L8.1 Sovereign Behavioral Assessment",
+        sample_size=0,
+        last_check=time.time(),
+        notes="SBA engine active. Credit spread ground truth requires external data feed.",
+    ),
+    FalsifiabilityCondition(
+        id="F11",
+        description="NL<0.30 signals must correlate with actual LP withdrawal events within 7 days at ≥80% recall.",
+        test_metric="NL<0.30 → LP withdrawal recall",
+        threshold="≥80% recall within 7d",
+        status="MONITORING",
+        plane="L7.1 Natural Liquidity",
+        sample_size=0,
+        last_check=time.time(),
+        notes="NL engine live. LP withdrawal ground truth requires pool-level event subscription.",
+    ),
+    FalsifiabilityCondition(
+        id="F12",
+        description="GOVERNANCE_CAPTURE signals must show validator_hhi > 4000 at time of detection in ≥90% of cases.",
+        test_metric="GOVERNANCE_CAPTURE HHI check rate",
+        threshold="≥90% have HHI>4000",
+        status="MONITORING",
+        plane="L4.8 HHI Enforcement",
+        sample_size=0,
+        last_check=time.time(),
+        notes="HHI tiers enforced in sigma_engine.py. Requires confirmed governance attack dataset.",
+    ),
+    FalsifiabilityCondition(
+        id="F13",
+        description="Resurrection signals must show >60% behavioral continuity to the entity's pre-dormancy behavioral profile.",
+        test_metric="Resurrection behavioral continuity",
+        threshold=">60% cosine similarity to pre-dormancy vector",
+        status="MONITORING",
+        plane="L2.4 Resurrection Inference",
+        sample_size=0,
+        last_check=time.time(),
+        notes="Resurrection engine active. Continuity measurement requires pre-dormancy FAISS vector archive.",
+    ),
+    FalsifiabilityCondition(
+        id="F14",
+        description="BRT forward prediction accuracy must reach ≥75% over a rolling 90-day window before BRT transitions from CONJECTURE to VALIDATED.",
+        test_metric="BRT F14 accuracy",
+        threshold="≥75% over 90d rolling",
+        status="CONJECTURE",
+        plane="L6.2 Biological Rhythm Timer",
+        sample_size=0,
+        last_check=time.time(),
+        notes="BRTValidationTracker active. 0/90 days accumulated. Explicitly labeled CONJECTURE.",
+    ),
+    FalsifiabilityCondition(
+        id="F15",
+        description="Cross-chain coherence score must maintain >80% rank stability across independent chain node restarts (non-manipulability test).",
+        test_metric="Cross-chain rank stability",
+        threshold=">80% rank stability across restarts",
+        status="MONITORING",
+        plane="L5.3 Cross-Chain Coherence",
+        sample_size=1000,
+        last_check=time.time(),
+
+---END---
+
+===== src/governance/intelligence_maintenance.py =====
+"""
+TRION Protocol — L3.7: Intelligence Maintenance Protocol (IMP)
+Whitepaper Chapter 8: ANIMA Intelligence Layer
+
+The Intelligence Maintenance Protocol monitors ANIMA's ongoing accuracy
+and triggers automatic retraining when performance degrades below threshold.
+
+IM(t) = weighted_average_of_accuracy_metrics(t)
+
+IM Threshold:
+  IM < IM_THRESHOLD → trigger retraining cycle
+  IM < IM_CRITICAL  → ANIMA output marked UNRELIABLE, signal degraded
+
+Monitoring Metrics (whitepaper §8.4):
+  1. Prediction Accuracy (PA):    HA tracker from anima_engine.py
+  2. Calibration Score (CS):      Distribution calibration quality
+  3. Pattern Coherence Ratio (PCR): Fraction of patterns with current coherence
+  4. Stream Completeness (SC):    Active data streams / required streams
+  5. Cross-Source Agreement (CA): Credibility-weighted cross-source agreement
+
+IMP Actions:
+  HEALTHY:     No action required
+  FLAGGED:     Issue warning, increase monitoring frequency
+  RETRAIN:     Trigger retraining cycle (pattern library reset + history retention)
+  UNRELIABLE:  Mark ANIMA output as UNRELIABLE, reduce signal weight by 0.50
+  DISABLED:    IM < 0.20 → ANIMA output = 0 (same as HA < 0.60 rule)
+
+Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+License: CC0
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Dict, List, Optional
+
+
+# ── Thresholds (whitepaper L3.7) ──────────────────────────────────────────────
+
+IM_THRESHOLD  = 0.55    # IM < 0.55 → trigger retraining
+IM_CRITICAL   = 0.40    # IM < 0.40 → ANIMA output marked UNRELIABLE
+IM_DISABLED   = 0.20    # IM < 0.20 → ANIMA output = 0
+
+# Component weights for IM(t) computation
+IM_WEIGHTS = {
+    "pa":  0.30,   # Prediction accuracy (most important)
+    "cs":  0.20,   # Calibration score
+    "pcr": 0.20,   # Pattern coherence ratio
+    "sc":  0.15,   # Stream completeness
+    "ca":  0.15,   # Cross-source agreement
+}
+
+assert abs(sum(IM_WEIGHTS.values()) - 1.0) < 1e-9, "IM weights must sum to 1.0"
+
+
+class IMPStatus(str, Enum):
+    HEALTHY     = "HEALTHY"
+    FLAGGED     = "FLAGGED"
+    RETRAIN     = "RETRAIN"
+    UNRELIABLE  = "UNRELIABLE"
+    DISABLED    = "DISABLED"
+
+
+@dataclass
+class IMPMetrics:
+    """Current ANIMA metrics fed into the Intelligence Maintenance Protocol."""
+    pa:                 float   # Prediction Accuracy [0,1]
+    cs:                 float   # Calibration Score [0,1]
+    pcr:                float   # Pattern Coherence Ratio [0,1]
+    sc:                 float   # Stream Completeness [0,1]
+    ca:                 float   # Cross-Source Agreement [0,1]
+    sample_size:        int     # Number of predictions evaluated
+    timestamp:          float
+
+
+@dataclass
+class IMPResult:
+    """Intelligence Maintenance Protocol evaluation result."""
+    im_score:           float           # IM(t) ∈ [0,1]
+    status:             IMPStatus
+    metrics:            IMPMetrics
+    weights:            Dict[str, float]
+    component_scores:   Dict[str, float]
+    retrain_triggered:  bool
+    signal_weight:      float           # Multiplier applied to ANIMA output [0,1]
+    actions:            List[str]
+    retraining_cycles:  int
+    last_retrain_at:    Optional[float]
+    disclosure:         str
+
+
+@dataclass
+class RetrainingCycle:
+    """Record of a completed retraining cycle."""
+    cycle_id:           int
+    triggered_at:       float
+    trigger_reason:     str
+    im_score_before:    float
+    im_score_after:     Optional[float]
+    patterns_reset:     int
+    history_retained:   bool
+    completed_at:       Optional[float]
+
+
+class IntelligenceMaintenanceProtocol:
+    """
+    L3.7 IMP — monitors ANIMA accuracy and triggers retraining.
+
+    Plugs into ANIMAEngine's HA tracker and pattern library.
+    Called after every ANIMA prediction cycle to assess health.
+    """
+
+    MONITORING_WINDOW_SIZE = 100    # Keep last N IM scores for trend analysis
+
+    def __init__(self):
+        self._history:     List[float] = []
+        self._cycles:      List[RetrainingCycle] = []
+        self._last_retrain: Optional[float] = None
+        self._retrain_count: int = 0
+
+    def evaluate(
+        self,
+        pa:              float,
+        cs:              float,
+        pcr:             float,
+        sc:              float,
+        ca:              float,
+        sample_size:     int = 0,
+        force_retrain:   bool = False,
+    ) -> IMPResult:
+        """
+        IM(t) = 0.30·PA + 0.20·CS + 0.20·PCR + 0.15·SC + 0.15·CA
+
+        Clamp all inputs to [0,1] before computation.
+        """
+        now = time.time()
+        metrics = IMPMetrics(
+            pa          = max(0.0, min(1.0, pa)),
+            cs          = max(0.0, min(1.0, cs)),
+            pcr         = max(0.0, min(1.0, pcr)),
+            sc          = max(0.0, min(1.0, sc)),
+            ca          = max(0.0, min(1.0, ca)),
+            sample_size = sample_size,
+            timestamp   = now,
+        )
+
+        component_scores = {
+            "pa":  IM_WEIGHTS["pa"]  * metrics.pa,
+            "cs":  IM_WEIGHTS["cs"]  * metrics.cs,
+            "pcr": IM_WEIGHTS["pcr"] * metrics.pcr,
+            "sc":  IM_WEIGHTS["sc"]  * metrics.sc,
+            "ca":  IM_WEIGHTS["ca"]  * metrics.ca,
+        }
+        im_score = sum(component_scores.values())
+        im_score = max(0.0, min(1.0, im_score))
+
+        # Update rolling history
+        self._history.append(im_score)
+        if len(self._history) > self.MONITORING_WINDOW_SIZE:
+            self._history = self._history[-self.MONITORING_WINDOW_SIZE:]
+
+        # Determine status
+        if im_score < IM_DISABLED:
+            status = IMPStatus.DISABLED
+        elif im_score < IM_CRITICAL:
+            status = IMPStatus.UNRELIABLE
+        elif im_score < IM_THRESHOLD or force_retrain:
+            status = IMPStatus.RETRAIN
+        elif im_score < 0.65:
+            status = IMPStatus.FLAGGED
+        else:
+            status = IMPStatus.HEALTHY
+
+        # Signal weight multiplier
+        signal_weight = {
+            IMPStatus.HEALTHY:    1.0,
+            IMPStatus.FLAGGED:    0.85,
+            IMPStatus.RETRAIN:    0.70,
+            IMPStatus.UNRELIABLE: 0.50,
+            IMPStatus.DISABLED:   0.0,
+        }[status]
+
+        # Build actions
+        actions = []
+        retrain_triggered = False
+
+        if status == IMPStatus.DISABLED:
+            actions.append("ANIMA_OUTPUT_ZEROED: IM below disabled threshold — A(t) = 0")
+        if status == IMPStatus.UNRELIABLE:
+            actions.append(f"SIGNAL_DEGRADED: ANIMA output weight reduced to {signal_weight:.2f}")
+        if status in (IMPStatus.RETRAIN, IMPStatus.UNRELIABLE) or force_retrain:
+            retrain_triggered = True
+            cycle = self._trigger_retrain(im_score)
+            actions.append(
+                f"RETRAIN_CYCLE_{cycle.cycle_id}: pattern library reset, "
+                f"history retained ({cycle.history_retained}), "
+                f"patterns_reset={cycle.patterns_reset}"
+
+---END---
+
+===== src/governance/open_research_questions.py =====
+"""
+TRION Protocol — 5 Open Research Questions for the Scientific Community
+Whitepaper Section 20.
+
+These questions are explicitly posed to cryptographers, information theorists,
+consensus researchers, and the broader academic community. They represent the
+honest boundaries of what the whitepaper claims vs. what requires further research.
+
+This module tracks the status of each question and any published responses.
+
+Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+License: CC0
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import List, Optional
+
+
+class QuestionStatus(str, Enum):
+    OPEN          = "OPEN"           # no satisfactory answer found yet
+    PARTIALLY_ANSWERED = "PARTIALLY_ANSWERED"  # progress made, not resolved
+    ANSWERED      = "ANSWERED"       # community has produced a satisfactory answer
+    FALSIFIED     = "FALSIFIED"      # question resolved by disproving the conjecture
+
+
+class QuestionDomain(str, Enum):
+    CRYPTOGRAPHY          = "CRYPTOGRAPHY"
+    INFORMATION_THEORY    = "INFORMATION_THEORY"
+    CONSENSUS_THEORY      = "CONSENSUS_THEORY"
+    SECURITY              = "SECURITY"
+    BEHAVIORAL_SCIENCE    = "BEHAVIORAL_SCIENCE"
+
+
+@dataclass
+class ResearchResponse:
+    """A community response to an open question."""
+    respondent:   str
+    summary:      str
+    submitted_at: float
+    link:         Optional[str] = None
+    accepted:     bool = False
+
+
+@dataclass
+class OpenResearchQuestion:
+    id:          str
+    domain:      QuestionDomain
+    title:       str
+    question:    str
+    context:     str
+    implications: str
+    status:      QuestionStatus
+    falsification_link: Optional[str]   # links to whitepaper falsification condition if any
+    responses:   List[ResearchResponse] = field(default_factory=list)
+    opened_at:   float = field(default_factory=time.time)
+    resolved_at: Optional[float] = None
+
+
+OPEN_RESEARCH_QUESTIONS: List[OpenResearchQuestion] = [
+
+    OpenResearchQuestion(
+        id="Q1",
+        domain=QuestionDomain.INFORMATION_THEORY,
+        title="Kolmogorov Compression Attack on BCK",
+        question=(
+            "Is there a compression scheme that bounds K(H(TRION,t)) at a finite value "
+            "regardless of t, even with H_environment > 0?"
+        ),
+        context=(
+            "The Behavioral Causal Key security bound is: "
+            "K(H(TRION,t)) >= Ω(t · N_chains · N_validators · H_environment). "
+            "The whitepaper argues this grows without bound as t→∞ and H_environment > 0. "
+            "A compression attack would find a description shorter than Ω(t·...), "
+            "which would undermine the claim that causal history is ontologically irreproducible."
+        ),
+        implications=(
+            "If answered YES (compression attack found): BCK's quantum resistance claim is weakened. "
+            "If answered NO (no such compression): BCK security bound is strengthened. "
+            "Either answer advances the formal theory of behavioral cryptography."
+        ),
+        status=QuestionStatus.OPEN,
+        falsification_link="F4 — BCK security bound",
+    ),
+
+    OpenResearchQuestion(
+        id="Q2",
+        domain=QuestionDomain.CRYPTOGRAPHY,
+        title="ZK Proofs Over Time-Series Behavioral Commitments",
+        question=(
+            "What is the practical circuit size limit for ZK proofs over multi-year "
+            "behavioral records? Are there proof aggregation techniques (recursive proofs, "
+            "proof composition) that make multi-year behavioral histories tractable?"
+        ),
+        context=(
+            "Behavioral ZK (Primitive 4): 'My behavioral history satisfies condition C "
+            "without revealing my behavioral history.' The Akashic Index is append-only, "
+            "potentially containing years of per-block behavioral events. "
+            "Standard Groth16/PLONK circuits scale with witness size. "
+            "Multi-year behavioral records may exceed practical circuit limits. "
+            "Specific circuit construction noted as NOT YET COMPLETED in the whitepaper."
+        ),
+        implications=(
+            "Direct blocker for BIRP and Behavioral ZK Sovereignty (Primitive 6, Primitive 4). "
+            "If recursive proof composition (Nova, Supernova, HyperPlonk) can aggregate "
+            "time-series commitments efficiently, this enables full BIRP deployment. "
+            "This is the most implementation-critical open question."
+        ),
+        status=QuestionStatus.OPEN,
+        falsification_link=None,
+    ),
+
+    OpenResearchQuestion(
+        id="Q3",
+        domain=QuestionDomain.CONSENSUS_THEORY,
+        title="Irrational Validator Coordination Security Bound",
+        question=(
+            "The Nash equilibrium assumes rational validators. What is the formal security "
+            "bound against ideologically motivated coordinators who accept the d_j penalty willingly?"
+        ),
+        context=(
+            "The Coordination Collapse Theorem proves Byzantine coordination is self-defeating "
+            "for rational validators: max influence requires independent assessment. "
+            "But this assumes validators maximize w_j_effective = s_j · d_j. "
+            "An ideologically motivated validator who does NOT care about influence "
+            "(willing to sacrifice d_j → 0 for coordination) breaks this assumption. "
+            "Real-world examples: nation-state actors, religious/political ideologues."
+        ),
+        implications=(
+            "If the formal bound is very low (irrational attack viable with few validators): "
+            "geographic and jurisdictional distribution requirements become more critical. "
+            "If bound is high (requires large coordinated ideological set): "
+            "current HHI enforcement is sufficient. Directly affects validator admission policy."
+        ),
+        status=QuestionStatus.OPEN,
+        falsification_link="F2 — Coordination Collapse Theorem",
+    ),
+
+    OpenResearchQuestion(
+        id="Q4",
+        domain=QuestionDomain.SECURITY,
+        title="Formal Security Model for Epigenetic Input Manipulation",
+        question=(
+            "Is there a formal security model for adversarial manipulation of "
+            "Threat_level and Network_entropy inputs to force vulnerability-exposing "
+            "behavioral expression states?"
+        ),
+        context=(
+            "The Epigenetic Layer (L4.5) changes behavioral expression based on: "
+            "EL_state(t) = f(Threat_level, Validator_health, Network_entropy). "
+            "Under HIGH threat: thresholds tighten. Under LOW threat: expression relaxes. "
+            "An adversary who can artificially suppress Threat_level could force the system "
+            "into a relaxed state during an actual attack. "
+            "The AWA (Anti-Weaponization Architecture) provides one defense layer, "
+            "but a formal adversarial model for EL_state manipulation is absent."
+        ),
+        implications=(
+            "Without a formal model: this is a potential attack surface that cannot be "
+            "quantified. A formal treatment would enable: (1) detection thresholds for "
+            "input manipulation, (2) minimum bounds on EL_state response time, "
+            "(3) adversarial probing detection via pattern analysis."
+        ),
+        status=QuestionStatus.OPEN,
+        falsification_link=None,
+    ),
+
+    OpenResearchQuestion(
+        id="Q5",
+        domain=QuestionDomain.BEHAVIORAL_SCIENCE,
+        title="Formal Model for Behavioral Drift in BIRP",
+        question=(
+            "What is the formal model for behavioral drift over time, and the maximum "
+            "tolerable drift rate before BIRP false negative rates become unacceptable?"
+        ),
+        context=(
+            "BIRP (Behavioral Identity Recovery Protocol, Primitive 6) recovers identity "
+            "by matching current behavioral patterns against enrolled behavioral fingerprint. "
+            "The recovery threshold is DELTA_RECOVERY = 0.15 cosine distance. "
+            "Behavioral patterns legitimately drift: people's on-chain activity changes "
+            "as markets change, protocols evolve, and user behavior matures. "
+            "The whitepaper acknowledges: 'False negative rate under behavioral drift "
+            "requires empirical validation and threshold-setting [CONJECTURE].' "
+            "No formal drift model exists yet."
+        ),
+        implications=(
+            "High drift rate → false negative (legitimate owner locked out of recovery). "
+            "Low drift rate → false positive (attacker who mirrors historical behavior succeeds). "
+            "A formal drift model would set: (1) optimal DELTA_RECOVERY threshold, "
+            "(2) re-enrollment frequency requirements, (3) maximum account age for BIRP. "
+            "This is the primary usability-security tradeoff in BIRP."
+        ),
+        status=QuestionStatus.OPEN,
+        falsification_link="BIRP false negative rate CONJECTURE",
+    ),
+]
+
+
+
+---END---
+
+===== src/governance/sba_engine.py =====
+"""
+TRION Protocol — L8.1: Sovereign Behavioral Assessment (SBA)
+Chapter 12: Macro-Behavioral Intelligence
+
+SBA(nation, t) = w_E·E(t) + w_I·I(t) + w_S·S(t) + w_G·G(t) + w_C·C(t)
+
+Components:
+  E = Economic Behavioral Regularity
+      corr(stated_GDP_growth, onchain_economic_activity) ∈ [-1, 1] → normalized [0,1]
+  I = Institutional Integrity
+      corr(stated_policy, onchain_enforcement) — measures policy-action gap
+  S = Sovereign Signaling Credibility
+      CRED-weighted track record of sovereign signal accuracy
+  G = Geopolitical Behavioral Coherence
+      consistency of cross-border behavioral patterns
+  C = Currency Behavior Alignment
+      alignment between stated monetary policy and onchain FX/stablecoin flows
+
+Weights (whitepaper L8.1):
+  w_E=0.30, w_I=0.25, w_S=0.20, w_G=0.15, w_C=0.10   (sum=1.00)
+
+SBA ∈ [0, 1]
+  ≥ 0.75  HIGH_CREDIBILITY
+  0.55–0.75  MODERATE_CREDIBILITY
+  0.35–0.55  LOW_CREDIBILITY
+  < 0.35  BEHAVIORAL_RISK
+
+Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+License: CC0
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from typing import List, Optional
+
+W_E = 0.30
+W_I = 0.25
+W_S = 0.20
+W_G = 0.15
+W_C = 0.10
+
+assert abs(W_E + W_I + W_S + W_G + W_C - 1.0) < 1e-9, "SBA weights must sum to 1.0"
+
+SBA_HIGH       = 0.75
+SBA_MODERATE   = 0.55
+SBA_LOW        = 0.35
+
+
+def _corr_to_score(corr: float) -> float:
+    """Convert correlation [-1,1] to score [0,1]: (corr+1)/2."""
+    return max(0.0, min(1.0, (corr + 1.0) / 2.0))
+
+
+def compute_e_score(
+    stated_gdp_growth_series:   List[float],
+    onchain_activity_series:    List[float],
+) -> float:
+    """
+    E = corr(stated_GDP_growth, onchain_economic_activity), normalized [0,1].
+    High E: stated economic signals match onchain reality.
+    Low E: stated growth diverges from onchain flows (behavioral deception risk).
+    """
+    n = min(len(stated_gdp_growth_series), len(onchain_activity_series))
+    if n < 3:
+        return 0.50
+    x = stated_gdp_growth_series[-n:]
+    y = onchain_activity_series[-n:]
+    mx, my = sum(x) / n, sum(y) / n
+    num = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y))
+    dx  = math.sqrt(sum((xi - mx) ** 2 for xi in x))
+    dy  = math.sqrt(sum((yi - my) ** 2 for yi in y))
+    if dx == 0 or dy == 0:
+        return 0.50
+    corr = max(-1.0, min(1.0, num / (dx * dy)))
+    return _corr_to_score(corr)
+
+
+def compute_i_score(
+    stated_policies:        List[str],
+    onchain_enforcements:   List[float],
+    policy_alignment_scores: List[float],
+) -> float:
+    """
+    I = corr(stated_policy, onchain_enforcement)
+    Measures the gap between declared regulatory/monetary policy and
+    observed on-chain enforcement behavior.
+    policy_alignment_scores: pre-computed match scores ∈ [0,1] per policy-action pair.
+    """
+    if not policy_alignment_scores:
+        return 0.50
+    n = len(policy_alignment_scores)
+    mean_alignment = sum(policy_alignment_scores) / n
+    variance = sum((s - mean_alignment) ** 2 for s in policy_alignment_scores) / max(1, n)
+    consistency_bonus = max(0.0, 0.10 * (1.0 - math.sqrt(variance)))
+    return min(1.0, mean_alignment + consistency_bonus)
+
+
+def compute_s_score(
+    signal_accuracy_history: List[float],
+    cred_weights:            Optional[List[float]] = None,
+) -> float:
+    """
+    S = CRED-weighted track record of sovereign signal accuracy.
+    signal_accuracy_history: accuracy of past sovereign signals [0,1]
+    cred_weights: source credibility weights (default: equal)
+    """
+    if not signal_accuracy_history:
+        return 0.50
+    n = len(signal_accuracy_history)
+    if cred_weights and len(cred_weights) == n:
+        total_w = sum(cred_weights)
+        if total_w > 0:
+            return min(1.0, sum(a * w for a, w in zip(signal_accuracy_history, cred_weights)) / total_w)
+    return sum(signal_accuracy_history) / n
+
+
+def compute_g_score(
+    cross_border_flow_consistency:  float,
+    alliance_behavioral_alignment:  float,
+    geopolitical_entropy:           float,
+) -> float:
+    """
+    G = Geopolitical Behavioral Coherence.
+    cross_border_flow_consistency: how consistent cross-border crypto flows are [0,1]
+    alliance_behavioral_alignment: alignment with stated alliance behaviors [0,1]
+    geopolitical_entropy: diversity of geopolitical behaviors (low = coherent) [0,1]
+    """
+    coherence = (cross_border_flow_consistency + alliance_behavioral_alignment) / 2.0
+    entropy_penalty = geopolitical_entropy * 0.20
+    return max(0.0, min(1.0, coherence - entropy_penalty))
+
+
+def compute_c_score(
+    stated_monetary_policy_rate:  float,
+    onchain_stablecoin_flow_bias: float,
+    fx_policy_alignment:          float,
+) -> float:
+    """
+    C = Currency Behavior Alignment.
+    stated_monetary_policy_rate: tightening/easing signal [0,1] where 0=ultra-easy, 1=ultra-tight
+    onchain_stablecoin_flow_bias: net flow direction matching policy [0,1]
+    fx_policy_alignment: FX intervention vs stated policy [0,1]
+    """
+    deviation = abs(stated_monetary_policy_rate - onchain_stablecoin_flow_bias)
+    alignment = max(0.0, 1.0 - deviation)
+    c = (alignment * 0.60 + fx_policy_alignment * 0.40)
+    return max(0.0, min(1.0, c))
+
+
+def compute_sba(
+    nation_id:                      str,
+    e_score:                        float,
+    i_score:                        float,
+    s_score:                        float,
+    g_score:                        float,
+    c_score:                        float,
+    w_e:                            float = W_E,
+    w_i:                            float = W_I,
+    w_s:                            float = W_S,
+    w_g:                            float = W_G,
+    w_c:                            float = W_C,
+) -> dict:
+    """
+    SBA(nation, t) = w_E·E + w_I·I + w_S·S + w_G·G + w_C·C
+
+    Returns full breakdown for whitepaper compliance.
+    """
+    sba = (w_e * e_score + w_i * i_score + w_s * s_score
+           + w_g * g_score + w_c * c_score)
+    sba = max(0.0, min(1.0, sba))
+
+    tier = (
+        "HIGH_CREDIBILITY"   if sba >= SBA_HIGH     else
+        "MODERATE_CREDIBILITY" if sba >= SBA_MODERATE else
+        "LOW_CREDIBILITY"    if sba >= SBA_LOW      else
+        "BEHAVIORAL_RISK"
+    )
+
+    policy_action_gap = abs(i_score - e_score)
+
+    return {
+        "nation_id":           nation_id,
+        "sba_score":           round(sba, 6),
+        "tier":                tier,
+        "components": {
+            "E_economic_regularity":    round(e_score, 4),
+            "I_institutional_integrity": round(i_score, 4),
+            "S_signaling_credibility":  round(s_score, 4),
+            "G_geopolitical_coherence": round(g_score, 4),
+            "C_currency_alignment":     round(c_score, 4),
+        },
+        "weights": {
+            "w_E": w_e, "w_I": w_i, "w_S": w_s, "w_G": w_g, "w_C": w_c,
+        },
+        "policy_action_gap":   round(policy_action_gap, 4),
+        "behavioral_risk":     sba < SBA_LOW,
+        "disclosure": (
+            f"SBA={sba:.4f} [{tier}]. "
+
+---END---
+
+===== src/governance/slashing.py =====
+"""
+TRION Protocol — L4.9: Slashing Engine + 7-Step Dispute Resolution
+Whitepaper Chapter 14: Governance Architecture — Validator Accountability
+
+Five Slashing Conditions:
+  S1. Double-signing:           slash 50% of stake, permanent ban
+  S2. Prolonged offline (>72h): slash 5% of stake, temp suspension
+  S3. False signal submission:  slash 20% of stake, probation 30d
+  S4. Manipulation collusion:   slash 100% of stake, permanent ban
+  S5. Geographic constraint violation: slash 10% of stake, 7-day suspension
+
+Seven-Step Dispute Resolution Flow:
+  Step 1: Accusation filed (any validator or protocol)
+  Step 2: Evidence window (48h for accused to submit counter-evidence)
+  Step 3: Quorum check (≥2/3 of non-accused validator stake must vote)
+  Step 4: Vote (binary: GUILTY/INNOCENT)
+  Step 5: HHI check (vote HHI must be < 4000 — no governance capture)
+  Step 6: Slashing execution (if GUILTY + HHI_ok)
+  Step 7: Appeal window (7 days, requires new evidence, one appeal per case)
+
+Slashing is irreversible once Step 6 executes (semi-immutability principle).
+Appeal can only reduce slash amount by up to 50%, not reverse guilt finding.
+
+Author: TRION Protocol — Originator: Hudu Yusuf (Analys)
+License: CC0
+"""
+
+from __future__ import annotations
+
+import hashlib
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Dict, List, Optional
+
+
+# ── Slashing Conditions ───────────────────────────────────────────────────────
+
+class SlashingCondition(str, Enum):
+    DOUBLE_SIGNING             = "S1_DOUBLE_SIGNING"
+    PROLONGED_OFFLINE          = "S2_PROLONGED_OFFLINE"
+    FALSE_SIGNAL_SUBMISSION    = "S3_FALSE_SIGNAL_SUBMISSION"
+    MANIPULATION_COLLUSION     = "S4_MANIPULATION_COLLUSION"
+    GEO_CONSTRAINT_VIOLATION   = "S5_GEO_CONSTRAINT_VIOLATION"
+
+
+SLASH_PARAMETERS: Dict[SlashingCondition, dict] = {
+    SlashingCondition.DOUBLE_SIGNING: {
+        "stake_fraction":   0.50,
+        "permanent_ban":    True,
+        "suspension_days":  None,
+        "probation_days":   None,
+        "description":      "Validator signed two conflicting blocks at the same height.",
+        "severity":         "CRITICAL",
+    },
+    SlashingCondition.PROLONGED_OFFLINE: {
+        "stake_fraction":   0.05,
+        "permanent_ban":    False,
+        "suspension_days":  7,
+        "probation_days":   None,
+        "description":      "Validator offline > 72h without authorized maintenance window.",
+        "severity":         "LOW",
+    },
+    SlashingCondition.FALSE_SIGNAL_SUBMISSION: {
+        "stake_fraction":   0.20,
+        "permanent_ban":    False,
+        "suspension_days":  None,
+        "probation_days":   30,
+        "description":      "Validator submitted signal that was later falsified with evidence.",
+        "severity":         "HIGH",
+    },
+    SlashingCondition.MANIPULATION_COLLUSION: {
+        "stake_fraction":   1.00,
+        "permanent_ban":    True,
+        "suspension_days":  None,
+        "probation_days":   None,
+        "description":      "Validator participated in coordinated manipulation of TRION outputs.",
+        "severity":         "CRITICAL",
+    },
+    SlashingCondition.GEO_CONSTRAINT_VIOLATION: {
+        "stake_fraction":   0.10,
+        "permanent_ban":    False,
+        "suspension_days":  7,
+        "probation_days":   None,
+        "description":      "Validator violated L4.8 geographic distribution constraints.",
+        "severity":         "MEDIUM",
+    },
+}
+
+
+# ── Dispute Resolution States ─────────────────────────────────────────────────
+
+class DisputeState(str, Enum):
+    STEP_1_ACCUSATION   = "STEP_1_ACCUSATION"
+    STEP_2_EVIDENCE     = "STEP_2_EVIDENCE"
+    STEP_3_QUORUM_CHECK = "STEP_3_QUORUM_CHECK"
+    STEP_4_VOTING       = "STEP_4_VOTING"
+    STEP_5_HHI_CHECK    = "STEP_5_HHI_CHECK"
+    STEP_6_EXECUTION    = "STEP_6_EXECUTION"
+    STEP_7_APPEAL       = "STEP_7_APPEAL"
+    RESOLVED_GUILTY     = "RESOLVED_GUILTY"
+    RESOLVED_INNOCENT   = "RESOLVED_INNOCENT"
+    APPEAL_GRANTED      = "APPEAL_GRANTED"
+
+
+@dataclass
+class SlashingEvent:
+    """A completed slashing execution."""
+    case_id:            str
+    validator_id:       str
+    condition:          SlashingCondition
+    stake_slashed:      float       # Absolute amount slashed
+    stake_remaining:    float       # Remaining stake after slash
+    slash_fraction:     float       # Fraction of stake slashed
+    permanent_ban:      bool
+    suspension_until:   Optional[float]   # Unix timestamp
+    probation_until:    Optional[float]   # Unix timestamp
+    executed_at:        float
+    evidence_hash:      str         # SHA3-256 of evidence submitted
+    appeal_eligible:    bool
+    appeal_deadline:    float       # 7 days after execution
+
+
+@dataclass
+class DisputeCase:
+    """A dispute case tracking all 7 steps."""
+    case_id:            str
+    accused_id:         str
+    accuser_id:         str
+    condition:          SlashingCondition
+    state:              DisputeState
+    created_at:         float
+    evidence_deadline:  float       # 48h after creation
+    evidence_submitted: List[str]   # Evidence hash list
+    votes_guilty:       float       # Total stake-weight voting GUILTY
+    votes_innocent:     float       # Total stake-weight voting INNOCENT
+    vote_hhi:           float       # HHI of voting stake (must be < 4000)
+    total_eligible_stake: float
+    quorum_reached:     bool
+    hhi_ok:             bool
+    slashing_event:     Optional[SlashingEvent] = None
+    appeal_evidence:    Optional[str] = None
+    resolution_notes:   str = ""
+    has_been_appealed:  bool = False
+
+
+# ── Dispute Resolution Engine ─────────────────────────────────────────────────
+
+class SlashingEngine:
+    """
+    TRION L4.9 Slashing Engine.
+
+    Implements the full 7-step dispute resolution flow.
+    Slashing is irreversible once Step 6 executes.
+    """
+
+    EVIDENCE_WINDOW_HOURS = 48.0
+    APPEAL_WINDOW_DAYS    = 7.0
+    QUORUM_THRESHOLD      = 2.0 / 3.0     # ≥2/3 of non-accused validator stake
+    HHI_THRESHOLD         = 4000.0        # Vote HHI must be < 4000 (L4.8)
+    APPEAL_MAX_REDUCTION  = 0.50          # Appeal can reduce slash by up to 50%
+
+    def __init__(self):
+        self._cases:  Dict[str, DisputeCase] = {}
+        self._events: List[SlashingEvent]    = []
+        self._banned: set                    = set()     # Permanently banned validator IDs
+        self._suspended: Dict[str, float]    = {}        # validator_id → until timestamp
+
+    def _case_id(self, accused: str, condition: SlashingCondition) -> str:
+        payload = f"{accused}:{condition.value}:{time.time()}".encode()
+        return "CASE-" + hashlib.sha3_256(payload).hexdigest()[:16].upper()
+
+    # ── Step 1: File accusation ───────────────────────────────────────────────
+
+    def file_accusation(
+        self,
+        accused_id:   str,
+        accuser_id:   str,
+        condition:    SlashingCondition,
+        total_eligible_stake: float = 1000.0,
+    ) -> DisputeCase:
+        """
+        Step 1: Accusation filed.
+        Opens 48h evidence window (Step 2).
+        """
+        if accused_id in self._banned:
+            raise ValueError(f"Validator {accused_id} is permanently banned — no new cases needed.")
+
+        now      = time.time()
+        case_id  = self._case_id(accused_id, condition)
+
+        case = DisputeCase(
+            case_id              = case_id,
+            accused_id           = accused_id,
+            accuser_id           = accuser_id,
+            condition            = condition,
+            state                = DisputeState.STEP_2_EVIDENCE,
+            created_at           = now,
+            evidence_deadline    = now + self.EVIDENCE_WINDOW_HOURS * 3600,
+            evidence_submitted   = [],
+
+---END---
+
+===== src/investment/investment_engine.py =====
+"""
+TRION Investment Signal Engine
+================================
+Translates TRION behavioral analysis into actionable investment decisions.
+Goes far beyond price charts: behavioral alpha from C(t), archetype trajectory,
+thermodynamic free energy, lifecycle stage, and manipulation detection.
+
+Output for any token/protocol/wallet:
+  - Decision: STRONG_BUY | BUY | WATCH | AVOID | STRONG_AVOID | SHORT
+  - Confidence: 0-1
+  - Expected behavioral trajectory
+  - Risk-adjusted behavioral score
+  - Time horizon recommendation
+  - Entry/exit conditions
+"""
+
+import time
+import math
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, asdict
+import numpy as np
+
+from src.akashic.archetypes import match_archetype, ARCHETYPES
+
+
+@dataclass
+class InvestmentSignal:
+    entity_id: str
+    timestamp: int
+    # Primary signal
+    decision: str              # STRONG_BUY | BUY | WATCH | AVOID | STRONG_AVOID | SHORT
+    confidence: float          # 0-1
+    behavioral_alpha: float    # edge vs. pure price-based analysis
+    # Scores
+    coherence_score: float
+    archetype_score: float     # how favorable the archetype is
+    lifecycle_score: float     # lifecycle stage favorability
+    thermo_score: float        # thermodynamic health
+    manipulation_free_score: float
+    # Risk
+    risk_level: str
+    max_drawdown_estimate: float   # estimated max loss if thesis wrong
+    # Trajectory
+    archetype: str
+    lifecycle_stage: str
+    phase: str                 # thermodynamic phase
+    trajectory: str            # IMPROVING | STABLE | DETERIORATING | UNKNOWN
+    # Time horizon
+    recommended_horizon: str   # HOURS | DAYS | WEEKS | MONTHS | LONG_TERM
+    entry_conditions: List[str]
+    exit_conditions: List[str]
+    # Narrative
+    thesis: str
+
+
+DECISION_THRESHOLDS = {
+    "STRONG_BUY":   (0.80, 1.00),
+    "BUY":          (0.62, 0.80),
+    "WATCH":        (0.42, 0.62),
+    "AVOID":        (0.22, 0.42),
+    "STRONG_AVOID": (0.10, 0.22),
+    "SHORT":        (0.00, 0.10),
+}
+
+ARCHETYPE_FAVORABILITY = {
+    "Organic Growth": 0.92,
+    "Healthy DeFi Protocol": 0.88,
+    "Accumulation": 0.72,
+    "Stablecoin Protocol": 0.70,
+    "Dormant Contract": 0.40,
+    "Distribution": 0.22,
+    "Wash Trading": 0.15,
+    "Bot Swarm": 0.12,
+    "Governance Attack": 0.05,
+    "Liquidity Drain": 0.03,
+    "Ponzi Structure": 0.02,
+    "Flash Exploit": 0.01,
+    "Death Spiral": 0.00,
+    "Unknown": 0.35,
+}
+
+LIFECYCLE_FAVORABILITY = {
+    "BIRTH": 0.55,    # risky but high upside
+    "GROWTH": 0.82,   # best entry point
+    "MATURITY": 0.68, # stable, lower upside
+    "DECLINE": 0.20,  # danger
+    "DEATH": 0.02,    # almost certainly lose
+}
+
+PHASE_FAVORABILITY = {
+    "SOLID": 0.65,   # stable but low energy
+    "LIQUID": 0.80,  # optimal
+    "GAS": 0.45,     # volatile
+    "PLASMA": 0.05,  # exploit/crash
+}
+
+
+class InvestmentEngine:
+
+    def analyze(
+        self,
+        entity_id: str,
+        phi_vector: List[float],
+        coherence: float,
+        manipulation_score: float = 0.0,
+        lifecycle_stage: str = "MATURITY",
+        thermo_phase: str = "LIQUID",
+        thermo_free_energy: float = 0.5,
+        market_volatility: float = 0.3,
+        epigenetic_drift: float = 0.0,
+        reputation_score: float = 0.5,
+        chain_id: int = 1,
+    ) -> InvestmentSignal:
+        t0 = int(time.time())
+
+        # 1. Archetype match
+        arch_result = match_archetype(phi_vector)
+        archetype_name = arch_result["archetype_name"]
+        arch_fav = ARCHETYPE_FAVORABILITY.get(archetype_name, 0.35)
+
+        # 2. Lifecycle favorability
+        lc_fav = LIFECYCLE_FAVORABILITY.get(lifecycle_stage, 0.5)
+
+        # 3. Thermodynamic favorability
+        thermo_fav = PHASE_FAVORABILITY.get(thermo_phase, 0.5)
+        thermo_combined = thermo_fav * 0.6 + thermo_free_energy * 0.4
+
+        # 4. Manipulation penalty
+        manip_penalty = 1.0 - (manipulation_score * 0.8)
+
+        # 5. Coherence weight
+        coherence_weight = coherence
+
+        # 6. Epigenetic drift penalty (large drift = unpredictable)
+        drift_penalty = max(0.0, 1.0 - epigenetic_drift * 0.5)
+
+        # 7. Reputation boost
+        rep_boost = reputation_score * 0.1
+
+        # 8. Composite behavioral alpha score
+        behavioral_alpha = (
+            arch_fav * 0.30 +
+            lc_fav * 0.20 +
+            thermo_combined * 0.20 +
+            coherence_weight * 0.20 +
+            manip_penalty * 0.10
+        ) * drift_penalty + rep_boost
+
+        behavioral_alpha = round(min(1.0, max(0.0, behavioral_alpha)), 4)
+
+        # 9. Decision
+        decision = "WATCH"
+        for d, (lo, hi) in DECISION_THRESHOLDS.items():
+            if lo <= behavioral_alpha < hi:
+                decision = d
+                break
+
+        # 10. Confidence
+        signals = [arch_fav, lc_fav, thermo_combined, coherence_weight]
+        confidence_raw = 1.0 - float(np.std(signals))
+        confidence = round(min(1.0, max(0.1, confidence_raw)), 4)
+
+        # 11. Risk level
+        if decision in ("STRONG_BUY", "BUY"):
+            risk_level = "LOW" if behavioral_alpha > 0.75 else "MEDIUM"
+        elif decision in ("AVOID", "STRONG_AVOID"):
+            risk_level = "HIGH"
+        elif decision == "SHORT":
+            risk_level = "CRITICAL"
+        else:
+            risk_level = "MEDIUM"
+
+        # 12. Max drawdown estimate
+        if decision in ("STRONG_BUY", "BUY"):
+            drawdown = round((1.0 - behavioral_alpha) * 0.5, 4)
+        elif decision in ("AVOID", "STRONG_AVOID"):
+            drawdown = round(0.5 + (1.0 - behavioral_alpha) * 0.4, 4)
+        elif decision == "SHORT":
+            drawdown = 0.95
+        else:
+            drawdown = round((1.0 - behavioral_alpha) * 0.35, 4)
+
+        # 13. Trajectory
+        if epigenetic_drift < 0.1 and coherence > 0.6:
+            trajectory = "STABLE"
+        elif epigenetic_drift > 0.4 or coherence < 0.3:
+            trajectory = "DETERIORATING"
+        elif arch_fav > 0.6 and lc_fav > 0.6:
+            trajectory = "IMPROVING"
+        else:
+            trajectory = "STABLE"
+
+        # 14. Time horizon
+        if lifecycle_stage == "GROWTH" and arch_fav > 0.7:
+            horizon = "WEEKS"
+        elif lifecycle_stage == "MATURITY":
+            horizon = "MONTHS"
+        elif lifecycle_stage in ("DECLINE", "DEATH"):
+            horizon = "HOURS"
+        elif lifecycle_stage == "BIRTH":
+
+---END---
+
+===== src/lifecycle/entity_lifecycle.py =====
+"""
+TRION Entity Lifecycle Engine
+================================
+Models the full life/death cycle of on-chain entities:
+  BIRTH → GROWTH → MATURITY → DECLINE → DEATH → (RESURRECTION?)
+
+Inspired by biological life cycles: entropy accumulation, metabolic rate,
+dormancy, and resurrection potential.
+
+Key outputs:
+  - Lifecycle stage (with confidence)
+  - Vitality score (0=dead, 1=thriving)
+  - Time-to-next-stage estimate
+  - Resurrection potential (for dormant/dead entities)
+  - Mortality risk curve
+"""
+
+import time
+import math
+import json
+import os
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, field, asdict
+import numpy as np
+
+_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data")
+os.makedirs(_DATA_DIR, exist_ok=True)
+LIFECYCLE_STORE_PATH = os.path.join(_DATA_DIR, "trion_lifecycle_state.json")
+
+
+@dataclass
+class LifecycleState:
+    entity_id: str
+    stage: str                     # BIRTH | GROWTH | MATURITY | DECLINE | DEATH
+    vitality: float                # 0=dead, 1=thriving
+    age_days: float                # estimated entity age in days
+    stage_duration_days: float     # time in current stage
+    last_activity: int             # last activity timestamp
+    activity_history: List[float]  # recent activity counts (normalized)
+    entropy_trend: List[float]     # entropy trajectory
+    metabolic_rate: float          # how fast entity consumes "energy" (fees)
+    resurrection_potential: float  # 0-1 probability of comeback
+    mortality_risk: float          # probability of death in next 30 days
+    stage_confidence: float        # confidence in current stage classification
+
+
+LIFECYCLE_TRANSITIONS = {
+    "BIRTH": {
+        "to_GROWTH": {"min_activity": 0.3, "min_age_days": 1, "min_tx_count": 100},
+        "to_DEATH": {"max_activity": 0.05, "min_age_days": 7},
+    },
+    "GROWTH": {
+        "to_MATURITY": {"min_age_days": 90, "min_activity": 0.5, "entropy_stable": True},
+        "to_DECLINE": {"max_activity_trend": -0.2},
+        "to_DEATH": {"max_activity": 0.02},
+    },
+    "MATURITY": {
+        "to_DECLINE": {"activity_trend": "decreasing", "entropy_increasing": True},
+        "to_GROWTH": {"activity_spike": True},  # unlikely, rare
+    },
+    "DECLINE": {
+        "to_DEATH": {"max_activity": 0.01, "entropy_high": True},
+        "to_MATURITY": {"recovery_detected": True},
+    },
+    "DEATH": {
+        "to_BIRTH": {"resurrection_signal": True},  # rare
+    },
+}
+
+
+class EntityLifecycleEngine:
+
+    VITALITY_DECAY_RATE = 0.02      # daily decay without activity
+    RESURRECTION_THRESHOLD = 0.15   # min vitality for resurrection
+
+    def __init__(self):
+        self._store: Dict[str, LifecycleState] = {}
+        self._load_store()
+
+    def _load_store(self):
+        try:
+            if os.path.exists(LIFECYCLE_STORE_PATH):
+                with open(LIFECYCLE_STORE_PATH) as f:
+                    raw = json.load(f)
+                for eid, data in raw.items():
+                    self._store[eid] = LifecycleState(**data)
+        except Exception:
+            pass
+
+    def _save_store(self):
+        try:
+            out = {eid: asdict(s) for eid, s in self._store.items()}
+            with open(LIFECYCLE_STORE_PATH, "w") as f:
+                json.dump(out, f)
+        except Exception:
+            pass
+
+    def _classify_stage(self, activity_history: List[float],
+                         age_days: float, entropy_trend: List[float],
+                         vitality: float) -> Tuple[str, float]:
+        if not activity_history:
+            return "BIRTH", 0.6
+
+        recent_activity = sum(activity_history[-5:]) / max(len(activity_history[-5:]), 1)
+        avg_activity = sum(activity_history) / max(len(activity_history), 1)
+
+        # Trend direction
+        if len(activity_history) >= 3:
+            trend = activity_history[-1] - activity_history[0]
+        else:
+            trend = 0.0
+
+        # Entropy trend
+        if len(entropy_trend) >= 2:
+            entropy_delta = entropy_trend[-1] - entropy_trend[0]
+        else:
+            entropy_delta = 0.0
+
+        # Classification logic
+        if vitality < 0.05:
+            return "DEATH", 0.95
+
+        if recent_activity < 0.02 and age_days > 30:
+            if vitality < 0.15:
+                return "DEATH", 0.85
+            return "DECLINE", 0.80
+
+        if age_days < 7 and avg_activity < 0.3:
+            return "BIRTH", 0.75
+
+        if trend > 0.1 and recent_activity > 0.3:
+            if age_days < 90:
+                return "GROWTH", 0.80
+            return "MATURITY", 0.70
+
+        if trend < -0.15 or entropy_delta > 0.2:
+            return "DECLINE", 0.75
+
+        if avg_activity > 0.5 and abs(trend) < 0.1:
+            return "MATURITY", 0.82
+
+        if avg_activity > 0.2 and trend > 0:
+            return "GROWTH", 0.70
+
+        return "MATURITY", 0.60
+
+    def _compute_vitality(self, activity_history: List[float],
+                          last_activity: int) -> float:
+        if not activity_history:
+            return 0.5
+        # Recency decay
+        seconds_since = int(time.time()) - last_activity
+        days_since = seconds_since / 86400.0
+        recency_decay = math.exp(-self.VITALITY_DECAY_RATE * days_since)
+
+        recent = sum(activity_history[-10:]) / max(len(activity_history[-10:]), 1)
+        vitality = recent * recency_decay
+        return round(min(1.0, max(0.0, vitality)), 4)
+
+    def _compute_resurrection_potential(self, state: LifecycleState) -> float:
+        if state.stage not in ("DECLINE", "DEATH"):
+            return 0.0
+
+        # Factors that enable resurrection
+        factors = []
+
+        # Historical vitality (was it ever healthy?)
+        if state.activity_history:
+            peak = max(state.activity_history)
+            factors.append(peak * 0.4)
+
+        # Age (older protocols may have brand/community value)
+        age_factor = min(1.0, state.age_days / 365.0) * 0.2
+        factors.append(age_factor)
+
+        # Recent small signals
+        recent = sum(state.activity_history[-3:]) / max(len(state.activity_history[-3:]), 1)
+        factors.append(recent * 0.4)
+
+        potential = sum(factors) / max(len(factors), 1)
+
+        # Death has lower potential than decline
+        if state.stage == "DEATH":
+            potential *= 0.3
+
+        return round(min(1.0, potential), 4)
+
+    def _compute_mortality_risk(self, state: LifecycleState) -> float:
+        if state.stage == "DEATH":
+            return 1.0
+        if state.stage in ("BIRTH", "GROWTH"):
+            base = 0.05
+        elif state.stage == "MATURITY":
+            base = 0.08
+        else:
+            base = 0.45
+
+        # Low vitality increases mortality
+        vitality_mod = (1.0 - state.vitality) * 0.4
+
+
+---END---
