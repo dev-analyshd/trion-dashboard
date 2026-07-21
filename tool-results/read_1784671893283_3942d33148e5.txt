@@ -1,0 +1,1515 @@
+     1→"use client";
+     2→
+     3→import { motion } from "framer-motion";
+     4→import {
+     5→  Card,
+     6→  CardContent,
+     7→  CardHeader,
+     8→  CardTitle,
+     9→} from "@/components/ui/card";
+    10→import { Badge } from "@/components/ui/badge";
+    11→import { Progress } from "@/components/ui/progress";
+    12→import { ScrollArea } from "@/components/ui/scroll-area";
+    13→import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+    14→import { Switch } from "@/components/ui/switch";
+    15→import { Input } from "@/components/ui/input";
+    16→import { Label } from "@/components/ui/label";
+    17→import { Slider } from "@/components/ui/slider";
+    18→import { Separator } from "@/components/ui/separator";
+    19→import {
+    20→  Activity,
+    21→  Cpu,
+    22→  Clock,
+    23→  Zap,
+    24→  Server,
+    25→  MemoryStick,
+    26→  ArrowRight,
+    27→  Database,
+    28→  Globe,
+    29→  Shield,
+    30→  Radio,
+    31→  Brain,
+    32→  Layers,
+    33→  ChevronRight,
+    34→  Circle,
+    35→  CheckCircle2,
+    36→  AlertTriangle,
+    37→  XCircle,
+    38→  Wifi,
+    39→  WifiOff,
+    40→  Settings,
+    41→  Info,
+    42→  Code2,
+    43→  FileCode2,
+    44→  GitBranch,
+    45→  Box,
+    46→  LayoutGrid,
+    47→  BarChart3,
+    48→  TrendingUp,
+    49→} from "lucide-react";
+    50→import {
+    51→  LineChart,
+    52→  Line,
+    53→  BarChart,
+    54→  Bar,
+    55→  XAxis,
+    56→  YAxis,
+    57→  CartesianGrid,
+    58→  Tooltip,
+    59→  ResponsiveContainer,
+    60→  Legend,
+    61→} from "recharts";
+    62→import {
+    63→  DEPLOYMENTS,
+    64→  API_ENDPOINTS,
+    65→  LANGUAGE_STATS,
+    66→  CHAINS,
+    67→  CONTRACTS,
+    68→  RELAYER_STATUS,
+    69→} from "@/lib/trion-data";
+    70→
+    71→// ─── Animation Variants ──────────────────────────────────────────
+    72→const containerVariants = {
+    73→  hidden: { opacity: 0 },
+    74→  visible: {
+    75→    opacity: 1,
+    76→    transition: { staggerChildren: 0.06, delayChildren: 0.1 },
+    77→  },
+    78→};
+    79→
+    80→const itemVariants = {
+    81→  hidden: { opacity: 0, y: 16 },
+    82→  visible: {
+    83→    opacity: 1,
+    84→    y: 0,
+    85→    transition: { duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] },
+    86→  },
+    87→};
+    88→
+    89→const scaleVariants = {
+    90→  hidden: { opacity: 0, scale: 0.92 },
+    91→  visible: {
+    92→    opacity: 1,
+    93→    scale: 1,
+    94→    transition: { duration: 0.35, ease: "easeOut" },
+    95→  },
+    96→};
+    97→
+    98→// ─── Shared Helpers ──────────────────────────────────────────────
+    99→function formatNumber(n: number): string {
+   100→  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, "") + "K";
+   101→  return n.toString();
+   102→}
+   103→
+   104→function SectionTitle({ children, icon: Icon }: { children: React.ReactNode; icon?: React.ElementType }) {
+   105→  return (
+   106→    <motion.h3
+   107→      className="text-sm font-semibold tracking-wider uppercase mb-4 flex items-center gap-2"
+   108→      style={{ color: "#8b95a5" }}
+   109→      variants={itemVariants}
+   110→    >
+   111→      {Icon && <Icon className="h-4 w-4" style={{ color: "#00D4AA" }} />}
+   112→      {children}
+   113→    </motion.h3>
+   114→  );
+   115→}
+   116→
+   117→// ─── Method badge color ──────────────────────────────────────────
+   118→function MethodBadge({ method }: { method: string }) {
+   119→  const colors: Record<string, string> = {
+   120→    GET: "rgba(0, 200, 220, 0.15)",
+   121→    POST: "rgba(0, 212, 170, 0.15)",
+   122→    PUT: "rgba(255, 217, 61, 0.15)",
+   123→    DELETE: "rgba(255, 107, 107, 0.15)",
+   124→  };
+   125→  const textColors: Record<string, string> = {
+   126→    GET: "#00C8DC",
+   127→    POST: "#00D4AA",
+   128→    PUT: "#FFD93D",
+   129→    DELETE: "#FF6B6B",
+   130→  };
+   131→  return (
+   132→    <Badge
+   133→      className="font-mono text-xs px-2 py-0.5 border-0"
+   134→      style={{
+   135→        backgroundColor: colors[method] || "rgba(255,255,255,0.1)",
+   136→        color: textColors[method] || "#e8ecf1",
+   137→      }}
+   138→    >
+   139→      {method}
+   140→    </Badge>
+   141→  );
+   142→}
+   143→
+   144→// ─── Status dot ──────────────────────────────────────────────────
+   145→function StatusDot({ status }: { status: string }) {
+   146→  const colorMap: Record<string, string> = {
+   147→    active: "#00D4AA",
+   148→    live: "#00D4AA",
+   149→    online: "#00D4AA",
+   150→    pending: "#FFD93D",
+   151→    indexing: "#00C8DC",
+   152→    degraded: "#FF8C42",
+   153→    deprecated: "#FFD93D",
+   154→    failed: "#FF6B6B",
+   155→    broken: "#FF6B6B",
+   156→    offline: "#FF6B6B",
+   157→  };
+   158→  return (
+   159→    <span
+   160→      className="inline-block h-2 w-2 rounded-full mr-1.5"
+   161→      style={{ backgroundColor: colorMap[status] || "#4a5568" }}
+   162→    />
+   163→  );
+   164→}
+   165→
+   166→// ═══════════════════════════════════════════════════════════════════
+   167→// 1. PROTOCOL HEALTH PAGE
+   168→// ═══════════════════════════════════════════════════════════════════
+   169→
+   170→export function ProtocolHealthPage() {
+   171→  // KPI data
+   172→  const kpis = [
+   173→    { label: "Uptime (30d)", value: "99.94%", icon: Activity, color: "#00D4AA", sub: "↑ 0.02% from last month" },
+   174→    { label: "API Response (p99)", value: "234ms", icon: Clock, color: "#00C8DC", sub: "Target: <300ms" },
+   175→    { label: "Error Rate", value: "0.03%", icon: AlertTriangle, color: "#FF6B6B", sub: "↓ 0.01% improvement" },
+   176→    { label: "Active Connections", value: "847", icon: Wifi, color: "#7B61FF", sub: "92 chains connected" },
+   177→    { label: "Memory Usage", value: "67.2%", icon: MemoryStick, color: "#FF8C42", sub: "12.8 GB / 19 GB" },
+   178→    { label: "GPU Utilization", value: "23.4%", icon: Cpu, color: "#FFD93D", sub: "FAISS vector search" },
+   179→  ];
+   180→
+   181→  // Service health data
+   182→  const services = [
+   183→    { name: "Core Engine", status: "active", health: 99.8, lastCheck: "2s ago", icon: Server },
+   184→    { name: "FAISS Service", status: "active", health: 99.5, lastCheck: "5s ago", icon: Database },
+   185→    { name: "Relayer Network", status: "active", health: 99.9, lastCheck: "1s ago", icon: Radio },
+   186→    { name: "0G Services", status: "active", health: 99.7, lastCheck: "8s ago", icon: Layers },
+   187→    { name: "P2P Network", status: "degraded", health: 94.2, lastCheck: "12s ago", icon: Globe },
+   188→  ];
+   189→
+   190→  // Generate 24h request volume data
+   191→  const requestVolumeData = Array.from({ length: 24 }, (_, i) => {
+   192→    const hour = `${i.toString().padStart(2, "0")}:00`;
+   193→    const base = 30000 + Math.sin((i - 6) * 0.5) * 15000 + Math.random() * 8000;
+   194→    const errorBase = 0.02 + Math.random() * 0.04;
+   195→    return {
+   196→      hour,
+   197→      requests: Math.round(base),
+   198→      errorRate: Math.round(errorBase * 1000) / 1000,
+   199→    };
+   200→  });
+   201→
+   202→  // Data flow steps
+   203→  const dataFlow = [
+   204→    { label: "On-Chain", sublabel: "100 Chains", type: "LIVE" as const, icon: Globe },
+   205→    { label: "Indexers", sublabel: "Rust / Go", type: "BACKEND" as const, icon: Database },
+   206→    { label: "Core Engine", sublabel: "Python / FAISS", type: "BACKEND" as const, icon: Cpu },
+   207→    { label: "API Layer", sublabel: "345+ Routes", type: "BACKEND" as const, icon: Server },
+   208→    { label: "Dashboard", sublabel: "Real-time", type: "LIVE" as const, icon: LayoutGrid },
+   209→  ];
+   210→
+   211→  const dataSourceColors: Record<string, { dot: string; bg: string; text: string }> = {
+   212→    LIVE: { dot: "#00D4AA", bg: "rgba(0,212,170,0.12)", text: "#00D4AA" },
+   213→    BACKEND: { dot: "#7B61FF", bg: "rgba(123,97,255,0.12)", text: "#7B61FF" },
+   214→    MOCK: { dot: "#4a5568", bg: "rgba(74,85,104,0.12)", text: "#4a5568" },
+   215→  };
+   216→
+   217→  const maxLines = Math.max(...LANGUAGE_STATS.map((l) => l.lines));
+   218→
+   219→  return (
+   220→    <motion.div
+   221→      className="space-y-6 p-1"
+   222→      variants={containerVariants}
+   223→      initial="hidden"
+   224→      animate="visible"
+   225→    >
+   226→      {/* ── KPI Cards ── */}
+   227→      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+   228→        {kpis.map((kpi, i) => (
+   229→          <motion.div key={kpi.label} variants={scaleVariants}>
+   230→            <Card className="glass-card p-4 hover:border-[rgba(255,255,255,0.1)] transition-colors">
+   231→              <div className="flex items-start justify-between mb-2">
+   232→                <div
+   233→                  className="p-1.5 rounded-lg"
+   234→                  style={{ backgroundColor: `${kpi.color}15` }}
+   235→                >
+   236→                  <kpi.icon className="h-4 w-4" style={{ color: kpi.color }} />
+   237→                </div>
+   238→              </div>
+   239→              <div className="text-2xl font-bold" style={{ color: "#e8ecf1" }}>
+   240→                {kpi.value}
+   241→              </div>
+   242→              <div className="text-xs mt-1" style={{ color: "#8b95a5" }}>
+   243→                {kpi.label}
+   244→              </div>
+   245→              <div className="text-xs mt-0.5" style={{ color: "#4a5568" }}>
+   246→                {kpi.sub}
+   247→              </div>
+   248→            </Card>
+   249→          </motion.div>
+   250→        ))}
+   251→      </div>
+   252→
+   253→      {/* ── System Architecture ── */}
+   254→      <motion.div variants={itemVariants}>
+   255→        <SectionTitle icon={Code2}>System Architecture — 12 Languages</SectionTitle>
+   256→        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+   257→          {LANGUAGE_STATS.map((lang) => (
+   258→            <motion.div
+   259→              key={lang.language}
+   260→              variants={scaleVariants}
+   261→              whileHover={{ scale: 1.02, borderColor: "rgba(255,255,255,0.12)" }}
+   262→              transition={{ duration: 0.2 }}
+   263→            >
+   264→              <Card className="glass-card p-4 transition-colors">
+   265→                <div className="flex items-center gap-2 mb-2">
+   266→                  <span
+   267→                    className="h-3 w-3 rounded-full flex-shrink-0"
+   268→                    style={{ backgroundColor: lang.color }}
+   269→                  />
+   270→                  <span
+   271→                    className="font-semibold text-sm"
+   272→                    style={{ color: "#e8ecf1" }}
+   273→                  >
+   274→                    {lang.language}
+   275→                  </span>
+   276→                  <span
+   277→                    className="ml-auto text-xs font-mono"
+   278→                    style={{ color: "#8b95a5" }}
+   279→                  >
+   280→                    {lang.lines.toLocaleString()} LOC
+   281→                  </span>
+   282→                </div>
+   283→                <div
+   284→                  className="text-xs mb-2 leading-relaxed"
+   285→                  style={{ color: "#8b95a5" }}
+   286→                >
+   287→                  {lang.role}
+   288→                </div>
+   289→                <div className="w-full h-1.5 rounded-full" style={{ backgroundColor: "rgba(255,255,255,0.06)" }}>
+   290→                  <motion.div
+   291→                    className="h-full rounded-full"
+   292→                    style={{ backgroundColor: lang.color }}
+   293→                    initial={{ width: 0 }}
+   294→                    animate={{
+   295→                      width: `${(lang.lines / maxLines) * 100}%`,
+   296→                    }}
+   297→                    transition={{ duration: 0.8, delay: 0.3, ease: "easeOut" }}
+   298→                  />
+   299→                </div>
+   300→                <div className="text-xs mt-1.5" style={{ color: "#4a5568" }}>
+   301→                  {lang.files} files
+   302→                </div>
+   303→              </Card>
+   304→            </motion.div>
+   305→          ))}
+   306→        </div>
+   307→      </motion.div>
+   308→
+   309→      {/* ── API Endpoints Table ── */}
+   310→      <motion.div variants={itemVariants}>
+   311→        <SectionTitle icon={Server}>API Endpoints</SectionTitle>
+   312→        <Card className="glass-card">
+   313→          <ScrollArea className="max-h-96">
+   314→            <div className="min-w-[800px]">
+   315→              <table className="w-full text-sm">
+   316→                <thead>
+   317→                  <tr
+   318→                    className="border-b"
+   319→                    style={{ borderColor: "rgba(255,255,255,0.06)" }}
+   320→                  >
+   321→                    {["ROUTE", "METHOD", "STATUS", "CALLS/24H", "AVG LATENCY", "CATEGORY"].map(
+   322→                      (h) => (
+   323→                        <th
+   324→                          key={h}
+   325→                          className="text-left px-4 py-3 text-xs font-semibold tracking-wider"
+   326→                          style={{ color: "#4a5568" }}
+   327→                        >
+   328→                          {h}
+   329→                        </th>
+   330→                      )
+   331→                    )}
+   332→                  </tr>
+   333→                </thead>
+   334→                <tbody>
+   335→                  {API_ENDPOINTS.map((ep, i) => (
+   336→                    <motion.tr
+   337→                      key={ep.route + i}
+   338→                      className="border-b transition-colors hover:bg-[rgba(255,255,255,0.04)]"
+   339→                      style={{ borderColor: "rgba(255,255,255,0.04)" }}
+   340→                      initial={{ opacity: 0, x: -10 }}
+   341→                      animate={{ opacity: 1, x: 0 }}
+   342→                      transition={{ delay: 0.3 + i * 0.03 }}
+   343→                    >
+   344→                      <td
+   345→                        className="px-4 py-2.5 font-mono text-xs"
+   346→                        style={{ color: "#e8ecf1" }}
+   347→                      >
+   348→                        {ep.route}
+   349→                      </td>
+   350→                      <td className="px-4 py-2.5">
+   351→                        <MethodBadge method={ep.method} />
+   352→                      </td>
+   353→                      <td className="px-4 py-2.5">
+   354→                        <span className="flex items-center text-xs" style={{ color: "#8b95a5" }}>
+   355→                          <StatusDot status={ep.status} />
+   356→                          {ep.status}
+   357→                        </span>
+   358→                      </td>
+   359→                      <td
+   360→                        className="px-4 py-2.5 text-xs font-mono"
+   361→                        style={{ color: "#e8ecf1" }}
+   362→                      >
+   363→                        {ep.calls24h.toLocaleString()}
+   364→                      </td>
+   365→                      <td
+   366→                        className="px-4 py-2.5 text-xs font-mono"
+   367→                        style={{ color: "#8b95a5" }}
+   368→                      >
+   369→                        {ep.avgLatency}
+   370→                      </td>
+   371→                      <td className="px-4 py-2.5">
+   372→                        <Badge
+   373→                          className="text-xs px-2 py-0 border-0"
+   374→                          style={{
+   375→                            backgroundColor: "rgba(255,255,255,0.06)",
+   376→                            color: "#8b95a5",
+   377→                          }}
+   378→                        >
+   379→                          {ep.category}
+   380→                        </Badge>
+   381→                      </td>
+   382→                    </motion.tr>
+   383→                  ))}
+   384→                </tbody>
+   385→              </table>
+   386→            </div>
+   387→          </ScrollArea>
+   388→        </Card>
+   389→      </motion.div>
+   390→
+   391→      {/* ── Service Health ── */}
+   392→      <motion.div variants={itemVariants}>
+   393→        <SectionTitle icon={Activity}>Service Health</SectionTitle>
+   394→        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
+   395→          {services.map((svc, i) => (
+   396→            <motion.div
+   397→              key={svc.name}
+   398→              variants={scaleVariants}
+   399→              custom={i}
+   400→              whileHover={{ scale: 1.02 }}
+   401→            >
+   402→              <Card className="glass-card p-4">
+   403→                <div className="flex items-center justify-between mb-3">
+   404→                  <div className="flex items-center gap-2">
+   405→                    <svc.icon className="h-4 w-4" style={{ color: svc.status === "degraded" ? "#FF8C42" : "#00D4AA" }} />
+   406→                    <span className="text-sm font-medium" style={{ color: "#e8ecf1" }}>
+   407→                      {svc.name}
+   408→                    </span>
+   409→                  </div>
+   410→                  <StatusDot status={svc.status} />
+   411→                </div>
+   412→                <div className="mb-2">
+   413→                  <div className="flex justify-between text-xs mb-1">
+   414→                    <span style={{ color: "#8b95a5" }}>Health</span>
+   415→                    <span style={{ color: svc.health >= 99 ? "#00D4AA" : svc.health >= 95 ? "#FFD93D" : "#FF6B6B" }}>
+   416→                      {svc.health}%
+   417→                    </span>
+   418→                  </div>
+   419→                  <div className="w-full h-1.5 rounded-full" style={{ backgroundColor: "rgba(255,255,255,0.06)" }}>
+   420→                    <motion.div
+   421→                      className="h-full rounded-full"
+   422→                      style={{
+   423→                        backgroundColor:
+   424→                          svc.health >= 99
+   425→                            ? "#00D4AA"
+   426→                            : svc.health >= 95
+   427→                            ? "#FFD93D"
+   428→                            : "#FF6B6B",
+   429→                      }}
+   430→                      initial={{ width: 0 }}
+   431→                      animate={{ width: `${svc.health}%` }}
+   432→                      transition={{ duration: 0.8, delay: 0.4 + i * 0.1 }}
+   433→                    />
+   434→                  </div>
+   435→                </div>
+   436→                <div className="text-xs" style={{ color: "#4a5568" }}>
+   437→                  Last check: {svc.lastCheck}
+   438→                </div>
+   439→              </Card>
+   440→            </motion.div>
+   441→          ))}
+   442→        </div>
+   443→      </motion.div>
+   444→
+   445→      {/* ── Request Volume & Error Rate Chart ── */}
+   446→      <motion.div variants={itemVariants}>
+   447→        <SectionTitle icon={TrendingUp}>Request Volume &amp; Error Rate (24h)</SectionTitle>
+   448→        <Card className="glass-card p-4">
+   449→          <div className="h-72">
+   450→            <ResponsiveContainer width="100%" height="100%">
+   451→              <LineChart data={requestVolumeData}>
+   452→                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+   453→                <XAxis
+   454→                  dataKey="hour"
+   455→                  tick={{ fill: "#4a5568", fontSize: 10 }}
+   456→                  axisLine={{ stroke: "rgba(255,255,255,0.06)" }}
+   457→                  tickLine={false}
+   458→                  interval={2}
+   459→                />
+   460→                <YAxis
+   461→                  yAxisId="left"
+   462→                  tick={{ fill: "#4a5568", fontSize: 10 }}
+   463→                  axisLine={{ stroke: "rgba(255,255,255,0.06)" }}
+   464→                  tickLine={false}
+   465→                  tickFormatter={(v: number) => formatNumber(v)}
+   466→                />
+   467→                <YAxis
+   468→                  yAxisId="right"
+   469→                  orientation="right"
+   470→                  domain={[0, 0.1]}
+   471→                  tick={{ fill: "#4a5568", fontSize: 10 }}
+   472→                  axisLine={{ stroke: "rgba(255,255,255,0.06)" }}
+   473→                  tickLine={false}
+   474→                  tickFormatter={(v: number) => `${(v * 100).toFixed(1)}%`}
+   475→                />
+   476→                <Tooltip
+   477→                  contentStyle={{
+   478→                    backgroundColor: "#161b25",
+   479→                    border: "1px solid rgba(255,255,255,0.08)",
+   480→                    borderRadius: "8px",
+   481→                    fontSize: "12px",
+   482→                    color: "#e8ecf1",
+   483→                  }}
+   484→                  labelStyle={{ color: "#8b95a5" }}
+   485→                  formatter={(value: number, name: string) => {
+   486→                    if (name === "requests") return [value.toLocaleString(), "Requests"];
+   487→                    return [`${(value * 100).toFixed(2)}%`, "Error Rate"];
+   488→                  }}
+   489→                />
+   490→                <Legend
+   491→                  wrapperStyle={{ fontSize: "12px", color: "#8b95a5" }}
+   492→                  formatter={(value: string) =>
+   493→                    value === "requests" ? "Request Volume" : "Error Rate"
+   494→                  }
+   495→                />
+   496→                <Line
+   497→                  yAxisId="left"
+   498→                  type="monotone"
+   499→                  dataKey="requests"
+   500→                  stroke="#00D4AA"
+   501→                  strokeWidth={2}
+   502→                  dot={false}
+   503→                  animationDuration={1200}
+   504→                />
+   505→                <Line
+   506→                  yAxisId="right"
+   507→                  type="monotone"
+   508→                  dataKey="errorRate"
+   509→                  stroke="#FF6B6B"
+   510→                  strokeWidth={1.5}
+   511→                  strokeDasharray="4 4"
+   512→                  dot={false}
+   513→                  animationDuration={1200}
+   514→                />
+   515→              </LineChart>
+   516→            </ResponsiveContainer>
+   517→          </div>
+   518→        </Card>
+   519→      </motion.div>
+   520→
+   521→      {/* ── Data Flow ── */}
+   522→      <motion.div variants={itemVariants}>
+   523→        <SectionTitle icon={ArrowRight}>Data Flow Pipeline</SectionTitle>
+   524→        <Card className="glass-card p-6">
+   525→          <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-0 justify-between">
+   526→            {dataFlow.map((step, i) => (
+   527→              <div key={step.label} className="flex items-center gap-2 sm:gap-0">
+   528→                <motion.div
+   529→                  className="flex flex-col items-center text-center px-3 sm:px-4"
+   530→                  variants={scaleVariants}
+   531→                  custom={i}
+   532→                  whileHover={{ scale: 1.05 }}
+   533→                >
+   534→                  <div
+   535→                    className="p-3 rounded-xl mb-2"
+   536→                    style={{ backgroundColor: `${dataSourceColors[step.type].dot}15` }}
+   537→                  >
+   538→                    <step.icon
+   539→                      className="h-5 w-5"
+   540→                      style={{ color: dataSourceColors[step.type].dot }}
+   541→                    />
+   542→                  </div>
+   543→                  <span
+   544→                    className="text-sm font-semibold"
+   545→                    style={{ color: "#e8ecf1" }}
+   546→                  >
+   547→                    {step.label}
+   548→                  </span>
+   549→                  <span className="text-xs mt-0.5" style={{ color: "#4a5568" }}>
+   550→                    {step.sublabel}
+   551→                  </span>
+   552→                  <Badge
+   553→                    className="text-[10px] mt-1.5 px-1.5 py-0 border-0 font-mono"
+   554→                    style={{
+   555→                      backgroundColor: dataSourceColors[step.type].bg,
+   556→                      color: dataSourceColors[step.type].text,
+   557→                    }}
+   558→                  >
+   559→                    {step.type}
+   560→                  </Badge>
+   561→                </motion.div>
+   562→                {i < dataFlow.length - 1 && (
+   563→                  <motion.div
+   564→                    className="hidden sm:block mx-1"
+   565→                    initial={{ opacity: 0 }}
+   566→                    animate={{ opacity: 1 }}
+   567→                    transition={{ delay: 0.5 + i * 0.15 }}
+   568→                  >
+   569→                    <ChevronRight
+   570→                      className="h-5 w-5"
+   571→                      style={{ color: "#4a5568" }}
+   572→                    />
+   573→                  </motion.div>
+   574→                )}
+   575→                {i < dataFlow.length - 1 && (
+   576→                  <motion.div
+   577→                    className="sm:hidden my-1"
+   578→                    initial={{ opacity: 0 }}
+   579→                    animate={{ opacity: 1 }}
+   580→                    transition={{ delay: 0.5 + i * 0.15 }}
+   581→                  >
+   582→                    <ArrowRight
+   583→                      className="h-4 w-4 rotate-90"
+   584→                      style={{ color: "#4a5568" }}
+   585→                    />
+   586→                  </motion.div>
+   587→                )}
+   588→              </div>
+   589→            ))}
+   590→          </div>
+   591→        </Card>
+   592→      </motion.div>
+   593→    </motion.div>
+   594→  );
+   595→}
+   596→
+   597→// ═══════════════════════════════════════════════════════════════════
+   598→// 2. DEPLOYMENTS PAGE
+   599→// ═══════════════════════════════════════════════════════════════════
+   600→
+   601→export function DeploymentsPage() {
+   602→  // Contract deployment matrix
+   603→  const networks = DEPLOYMENTS.map((d) => d.network);
+   604→  const contractNames = [...new Set(DEPLOYMENTS.map((d) => d.contract))];
+   605→  const matrix = DEPLOYMENTS.reduce<Record<string, Record<string, boolean>>>(
+   606→    (acc, d) => {
+   607→      if (!acc[d.contract]) acc[d.contract] = {};
+   608→      acc[d.contract][d.network] = true;
+   609→      return acc;
+   610→    },
+   611→    {}
+   612→  );
+   613→
+   614→  // Bar chart data: deployments per chain
+   615→  const chainDeployCounts = DEPLOYMENTS.reduce<Record<string, number>>(
+   616→    (acc, d) => {
+   617→      acc[d.network] = (acc[d.network] || 0) + 1;
+   618→      return acc;
+   619→    },
+   620→    {}
+   621→  );
+   622→  const barData = Object.entries(chainDeployCounts).map(([name, count]) => ({
+   623→    name: name.length > 14 ? name.slice(0, 14) + "…" : name,
+   624→    fullName: name,
+   625→    count,
+   626→  }));
+   627→
+   628→  // Status badge colors
+   629→  const statusColors: Record<string, { bg: string; text: string }> = {
+   630→    active: { bg: "rgba(0,212,170,0.15)", text: "#00D4AA" },
+   631→    pending: { bg: "rgba(255,217,61,0.15)", text: "#FFD93D" },
+   632→    failed: { bg: "rgba(255,107,107,0.15)", text: "#FF6B6B" },
+   633→  };
+   634→
+   635→  return (
+   636→    <motion.div
+   637→      className="space-y-6 p-1"
+   638→      variants={containerVariants}
+   639→      initial="hidden"
+   640→      animate="visible"
+   641→    >
+   642→      {/* ── Deployments Table ── */}
+   643→      <motion.div variants={itemVariants}>
+   644→        <SectionTitle icon={Box}>Contract Deployments</SectionTitle>
+   645→        <Card className="glass-card">
+   646→          <ScrollArea className="max-h-96">
+   647→            <div className="min-w-[900px]">
+   648→              <table className="w-full text-sm">
+   649→                <thead>
+   650→                  <tr
+   651→                    className="border-b"
+   652→                    style={{ borderColor: "rgba(255,255,255,0.06)" }}
+   653→                  >
+   654→                    {[
+   655→                      "NETWORK",
+   656→                      "CHAIN ID",
+   657→                      "CONTRACT",
+   658→                      "ADDRESS",
+   659→                      "STATUS",
+   660→                      "TX HASH",
+   661→                      "DEPLOYED AT",
+   662→                      "BLOCK",
+   663→                    ].map((h) => (
+   664→                      <th
+   665→                        key={h}
+   666→                        className="text-left px-4 py-3 text-xs font-semibold tracking-wider"
+   667→                        style={{ color: "#4a5568" }}
+   668→                      >
+   669→                        {h}
+   670→                      </th>
+   671→                    ))}
+   672→                  </tr>
+   673→                </thead>
+   674→                <tbody>
+   675→                  {DEPLOYMENTS.map((dep, i) => (
+   676→                    <motion.tr
+   677→                      key={dep.txHash + dep.network}
+   678→                      className="border-b transition-colors hover:bg-[rgba(255,255,255,0.04)]"
+   679→                      style={{ borderColor: "rgba(255,255,255,0.04)" }}
+   680→                      initial={{ opacity: 0, x: -10 }}
+   681→                      animate={{ opacity: 1, x: 0 }}
+   682→                      transition={{ delay: 0.2 + i * 0.04 }}
+   683→                    >
+   684→                      <td
+   685→                        className="px-4 py-2.5 text-xs font-medium"
+   686→                        style={{ color: "#e8ecf1" }}
+   687→                      >
+   688→                        {dep.network}
+   689→                      </td>
+   690→                      <td
+   691→                        className="px-4 py-2.5 text-xs font-mono"
+   692→                        style={{ color: "#8b95a5" }}
+   693→                      >
+   694→                        {dep.chainId}
+   695→                      </td>
+   696→                      <td
+   697→                        className="px-4 py-2.5 text-xs font-mono"
+   698→                        style={{ color: "#00D4AA" }}
+   699→                      >
+   700→                        {dep.contract}
+   701→                      </td>
+   702→                      <td
+   703→                        className="px-4 py-2.5 text-xs font-mono"
+   704→                        style={{ color: "#8b95a5" }}
+   705→                      >
+   706→                        {dep.address}
+   707→                      </td>
+   708→                      <td className="px-4 py-2.5">
+   709→                        <Badge
+   710→                          className="text-xs px-2 py-0 border-0 capitalize"
+   711→                          style={{
+   712→                            backgroundColor: statusColors[dep.status]?.bg,
+   713→                            color: statusColors[dep.status]?.text,
+   714→                          }}
+   715→                        >
+   716→                          {dep.status}
+   717→                        </Badge>
+   718→                      </td>
+   719→                      <td
+   720→                        className="px-4 py-2.5 text-xs font-mono cursor-pointer hover:text-white transition-colors"
+   721→                        style={{ color: "#7B61FF" }}
+   722→                      >
+   723→                        {dep.txHash}
+   724→                      </td>
+   725→                      <td
+   726→                        className="px-4 py-2.5 text-xs"
+   727→                        style={{ color: "#8b95a5" }}
+   728→                      >
+   729→                        {dep.deployedAt}
+   730→                      </td>
+   731→                      <td
+   732→                        className="px-4 py-2.5 text-xs font-mono"
+   733→                        style={{ color: "#4a5568" }}
+   734→                      >
+   735→                        {dep.blockNumber.toLocaleString()}
+   736→                      </td>
+   737→                    </motion.tr>
+   738→                  ))}
+   739→                </tbody>
+   740→              </table>
+   741→            </div>
+   742→          </ScrollArea>
+   743→        </Card>
+   744→      </motion.div>
+   745→
+   746→      {/* ── Contract Deployment Map ── */}
+   747→      <motion.div variants={itemVariants}>
+   748→        <SectionTitle icon={LayoutGrid}>Contract Deployment Map</SectionTitle>
+   749→        <Card className="glass-card p-4">
+   750→          <ScrollArea className="max-h-72">
+   751→            <div className="min-w-[700px]">
+   752→              <table className="w-full text-xs">
+   753→                <thead>
+   754→                  <tr
+   755→                    className="border-b"
+   756→                    style={{ borderColor: "rgba(255,255,255,0.06)" }}
+   757→                  >
+   758→                    <th
+   759→                      className="text-left px-3 py-2 font-semibold tracking-wider"
+   760→                      style={{ color: "#4a5568" }}
+   761→                    >
+   762→                      CONTRACT
+   763→                    </th>
+   764→                    {networks.map((n) => (
+   765→                      <th
+   766→                        key={n}
+   767→                        className="text-center px-2 py-2 font-semibold tracking-wider"
+   768→                        style={{ color: "#4a5568", minWidth: "80px" }}
+   769→                      >
+   770→                        <div className="truncate" title={n}>
+   771→                          {n.length > 12 ? n.slice(0, 12) + "…" : n}
+   772→                        </div>
+   773→                      </th>
+   774→                    ))}
+   775→                  </tr>
+   776→                </thead>
+   777→                <tbody>
+   778→                  {contractNames.map((contract, i) => (
+   779→                    <motion.tr
+   780→                      key={contract}
+   781→                      className="border-b"
+   782→                      style={{ borderColor: "rgba(255,255,255,0.04)" }}
+   783→                      initial={{ opacity: 0 }}
+   784→                      animate={{ opacity: 1 }}
+   785→                      transition={{ delay: 0.3 + i * 0.05 }}
+   786→                    >
+   787→                      <td
+   788→                        className="px-3 py-2 font-mono"
+   789→                        style={{ color: "#e8ecf1" }}
+   790→                      >
+   791→                        {contract.length > 22
+   792→                          ? contract.slice(0, 22) + "…"
+   793→                          : contract}
+   794→                      </td>
+   795→                      {networks.map((n) => (
+   796→                        <td key={n} className="text-center px-2 py-2">
+   797→                          {matrix[contract]?.[n] ? (
+   798→                            <motion.span
+   799→                              className="inline-block h-3 w-3 rounded-full"
+   800→                              style={{ backgroundColor: "#00D4AA" }}
+   801→                              initial={{ scale: 0 }}
+   802→                              animate={{ scale: 1 }}
+   803→                              transition={{ delay: 0.5 + i * 0.05 }}
+   804→                            />
+   805→                          ) : (
+   806→                            <span style={{ color: "#4a5568" }}>—</span>
+   807→                          )}
+   808→                        </td>
+   809→                      ))}
+   810→                    </motion.tr>
+   811→                  ))}
+   812→                </tbody>
+   813→              </table>
+   814→            </div>
+   815→          </ScrollArea>
+   816→        </Card>
+   817→      </motion.div>
+   818→
+   819→      {/* ── Deployment Timeline ── */}
+   820→      <motion.div variants={itemVariants}>
+   821→        <SectionTitle icon={Clock}>Deployment Timeline</SectionTitle>
+   822→        <Card className="glass-card p-6">
+   823→          <div className="relative">
+   824→            {/* Vertical line */}
+   825→            <div
+   826→              className="absolute left-4 sm:left-6 top-0 bottom-0 w-px"
+   827→              style={{ backgroundColor: "rgba(255,255,255,0.06)" }}
+   828→            />
+   829→            <div className="space-y-6">
+   830→              {[...DEPLOYMENTS]
+   831→                .sort(
+   832→                  (a, b) =>
+   833→                    new Date(b.deployedAt).getTime() -
+   834→                    new Date(a.deployedAt).getTime()
+   835→                )
+   836→                .map((dep, i) => (
+   837→                  <motion.div
+   838→                    key={dep.txHash + dep.network}
+   839→                    className="relative flex items-start gap-4 pl-0 sm:pl-0"
+   840→                    initial={{ opacity: 0, x: -20 }}
+   841→                    animate={{ opacity: 1, x: 0 }}
+   842→                    transition={{ delay: 0.3 + i * 0.07 }}
+   843→                  >
+   844→                    {/* Dot on the line */}
+   845→                    <div className="relative z-10 flex-shrink-0 mt-1">
+   846→                      <motion.div
+   847→                        className="h-3.5 w-3.5 rounded-full border-2"
+   848→                        style={{
+   849→                          borderColor: statusColors[dep.status]?.text,
+   850→                          backgroundColor: `${statusColors[dep.status]?.text}33`,
+   851→                        }}
+   852→                        initial={{ scale: 0 }}
+   853→                        animate={{ scale: 1 }}
+   854→                        transition={{ delay: 0.5 + i * 0.07 }}
+   855→                      />
+   856→                    </div>
+   857→                    {/* Spacer to push content right of the line */}
+   858→                    <div className="absolute left-4 sm:left-6 w-4 sm:w-6" />
+   859→                    {/* Content */}
+   860→                    <div
+   861→                      className="glass-card-elevated p-3 sm:p-4 flex-1 ml-2"
+   862→                      style={{ borderRadius: "10px" }}
+   863→                    >
+   864→                      <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3">
+   865→                        <span
+   866→                          className="text-sm font-semibold"
+   867→                          style={{ color: "#e8ecf1" }}
+   868→                        >
+   869→                          {dep.contract}
+   870→                        </span>
+   871→                        <Badge
+   872→                          className="text-[10px] px-1.5 py-0 border-0 w-fit"
+   873→                          style={{
+   874→                            backgroundColor: "rgba(123,97,255,0.15)",
+   875→                            color: "#7B61FF",
+   876→                          }}
+   877→                        >
+   878→                          {dep.network}
+   879→                        </Badge>
+   880→                      </div>
+   881→                      <div className="flex flex-wrap items-center gap-3 mt-2 text-xs" style={{ color: "#4a5568" }}>
+   882→                        <span>{dep.deployedAt}</span>
+   883→                        <span>•</span>
+   884→                        <span className="font-mono">{dep.address}</span>
+   885→                      </div>
+   886→                    </div>
+   887→                  </motion.div>
+   888→                ))}
+   889→            </div>
+   890→          </div>
+   891→        </Card>
+   892→      </motion.div>
+   893→
+   894→      {/* ── Multi-Chain Coverage ── */}
+   895→      <motion.div variants={itemVariants}>
+   896→        <SectionTitle icon={BarChart3}>Multi-Chain Coverage</SectionTitle>
+   897→        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+   898→          {/* Bar chart */}
+   899→          <Card className="glass-card p-4 lg:col-span-2">
+   900→            <div className="h-64">
+   901→              <ResponsiveContainer width="100%" height="100%">
+   902→                <BarChart data={barData} layout="vertical">
+   903→                  <CartesianGrid
+   904→                    strokeDasharray="3 3"
+   905→                    stroke="rgba(255,255,255,0.04)"
+   906→                    horizontal={false}
+   907→                  />
+   908→                  <XAxis
+   909→                    type="number"
+   910→                    tick={{ fill: "#4a5568", fontSize: 11 }}
+   911→                    axisLine={{ stroke: "rgba(255,255,255,0.06)" }}
+   912→                    tickLine={false}
+   913→                    allowDecimals={false}
+   914→                  />
+   915→                  <YAxis
+   916→                    type="category"
+   917→                    dataKey="name"
+   918→                    tick={{ fill: "#8b95a5", fontSize: 11 }}
+   919→                    axisLine={{ stroke: "rgba(255,255,255,0.06)" }}
+   920→                    tickLine={false}
+   921→                    width={120}
+   922→                  />
+   923→                  <Tooltip
+   924→                    contentStyle={{
+   925→                      backgroundColor: "#161b25",
+   926→                      border: "1px solid rgba(255,255,255,0.08)",
+   927→                      borderRadius: "8px",
+   928→                      fontSize: "12px",
+   929→                      color: "#e8ecf1",
+   930→                    }}
+   931→                    labelFormatter={(_l: string, payload: Array<{ payload?: { fullName?: string } }>) =>
+   932→                      payload?.[0]?.payload?.fullName || _l
+   933→                    }
+   934→                    formatter={(value: number) => [
+   935→                      `${value} deployment${value !== 1 ? "s" : ""}`,
+   936→                      "Count",
+   937→                    ]}
+   938→                  />
+   939→                  <Bar
+   940→                    dataKey="count"
+   941→                    fill="#00D4AA"
+   942→                    radius={[0, 4, 4, 0]}
+   943→                    animationDuration={800}
+   944→                  >
+   945→                    {barData.map((entry, index) => (
+   946→                      <motion.rect
+   947→                        key={entry.fullName}
+   948→                        initial={{ opacity: 0, width: 0 }}
+   949→                        animate={{ opacity: 1, width: "auto" }}
+   950→                        transition={{ delay: 0.4 + index * 0.06 }}
+   951→                      />
+   952→                    ))}
+   953→                  </Bar>
+   954→                </BarChart>
+   955→              </ResponsiveContainer>
+   956→            </div>
+   957→          </Card>
+   958→
+   959→          {/* Stats panel */}
+   960→          <div className="flex flex-col gap-4">
+   961→            <Card className="glass-card p-5 flex-1 flex flex-col justify-center">
+   962→              <div className="text-center space-y-4">
+   963→                <div>
+   964→                  <div className="text-4xl font-bold" style={{ color: "#00D4AA" }}>
+   965→                    8
+   966→                  </div>
+   967→                  <div className="text-sm mt-1" style={{ color: "#8b95a5" }}>
+   968→                    Networks
+   969→                  </div>
+   970→                </div>
+   971→                <Separator style={{ backgroundColor: "rgba(255,255,255,0.06)" }} />
+   972→                <div>
+   973→                  <div className="text-4xl font-bold" style={{ color: "#7B61FF" }}>
+   974→                    6
+   975→                  </div>
+   976→                  <div className="text-sm mt-1" style={{ color: "#8b95a5" }}>
+   977→                    Contract Types
+   978→                  </div>
+   979→                </div>
+   980→                <Separator style={{ backgroundColor: "rgba(255,255,255,0.06)" }} />
+   981→                <div className="flex justify-center gap-6">
+   982→                  <div>
+   983→                    <div className="text-2xl font-bold" style={{ color: "#FFD93D" }}>
+   984→                      4
+   985→                    </div>
+   986→                    <div className="text-xs" style={{ color: "#8b95a5" }}>
+   987→                      Testnets
+   988→                    </div>
+   989→                  </div>
+   990→                  <div>
+   991→                    <div className="text-2xl font-bold" style={{ color: "#00D4AA" }}>
+   992→                      4
+   993→                    </div>
+   994→                    <div className="text-xs" style={{ color: "#8b95a5" }}>
+   995→                      Mainnets
+   996→                    </div>
+   997→                  </div>
+   998→                </div>
+   999→              </div>
+  1000→            </Card>
+  1001→            <Card className="glass-card p-4">
+  1002→              <div className="text-xs" style={{ color: "#4a5568" }}>
+  1003→                Coverage spans EVM, Cairo (StarkNet), and FunC (TON) VM families
+  1004→              </div>
+  1005→            </Card>
+  1006→          </div>
+  1007→        </div>
+  1008→      </motion.div>
+  1009→    </motion.div>
+  1010→  );
+  1011→}
+  1012→
+  1013→// ═══════════════════════════════════════════════════════════════════
+  1014→// 3. SETTINGS PAGE
+  1015→// ═══════════════════════════════════════════════════════════════════
+  1016→
+  1017→export function SettingsPage() {
+  1018→  // Data source toggles state
+  1019→  const dataSources = [
+  1020→    {
+  1021→      id: "rpc-ethereum",
+  1022→      label: "On-chain RPC — Ethereum",
+  1023→      enabled: true,
+  1024→      status: "Connected",
+  1025→      statusColor: "#00D4AA",
+  1026→      type: "LIVE" as const,
+  1027→    },
+  1028→    {
+  1029→      id: "rpc-arbitrum",
+  1030→      label: "On-chain RPC — Arbitrum",
+  1031→      enabled: true,
+  1032→      status: "Connected",
+  1033→      statusColor: "#00D4AA",
+  1034→      type: "LIVE" as const,
+  1035→    },
+  1036→    {
+  1037→      id: "rpc-base",
+  1038→      label: "On-chain RPC — Base",
+  1039→      enabled: true,
+  1040→      status: "Connected",
+  1041→      statusColor: "#00D4AA",
+  1042→      type: "LIVE" as const,
+  1043→    },
+  1044→    {
+  1045→      id: "rpc-polygon",
+  1046→      label: "On-chain RPC — Polygon",
+  1047→      enabled: false,
+  1048→      status: "Disabled",
+  1049→      statusColor: "#4a5568",
+  1050→      type: "LIVE" as const,
+  1051→    },
+  1052→    {
+  1053→      id: "rpc-bnb",
+  1054→      label: "On-chain RPC — BNB Chain",
+  1055→      enabled: false,
+  1056→      status: "Disabled",
+  1057→      statusColor: "#4a5568",
+  1058→      type: "LIVE" as const,
+  1059→    },
+  1060→    {
+  1061→      id: "backend-api",
+  1062→      label: "TRION Backend API (oracle_api)",
+  1063→      enabled: true,
+  1064→      status: "http://localhost:5000",
+  1065→      statusColor: "#7B61FF",
+  1066→      type: "BACKEND" as const,
+  1067→    },
+  1068→    {
+  1069→      id: "faiss-service",
+  1070→      label: "FAISS Vector Service",
+  1071→      enabled: true,
+  1072→      status: "Connected — 847 indexes loaded",
+  1073→      statusColor: "#7B61FF",
+  1074→      type: "BACKEND" as const,
+  1075→    },
+  1076→    {
+  1077→      id: "0g-storage",
+  1078→      label: "0G Storage / DA Layer",
+  1079→      enabled: true,
+  1080→      status: "Syncing — 99.7% current",
+  1081→      statusColor: "#FFD93D",
+  1082→      type: "BACKEND" as const,
+  1083→    },
+  1084→    {
+  1085→      id: "anima-nlp",
+  1086→      label: "ANIMA NLP Engine",
+  1087→      enabled: true,
+  1088→      status: "54 languages loaded",
+  1089→      statusColor: "#7B61FF",
+  1090→      type: "BACKEND" as const,
+  1091→    },
+  1092→  ];
+  1093→
+  1094→  const dataSourceLegend = [
+  1095→    {
+  1096→      type: "LIVE" as const,
+  1097→      dot: "#00D4AA",
+  1098→      description: "Data from real on-chain RPC or public API",
+  1099→    },
+  1100→    {
+  1101→      type: "BACKEND" as const,
+  1102→      dot: "#7B61FF",
+  1103→      description: "Data from TRION backend services (requires running server)",
+  1104→    },
+  1105→    {
+  1106→      type: "MOCK" as const,
+  1107→      dot: "#4a5568",
+  1108→      description: "Simulated data for demonstration",
+  1109→    },
+  1110→  ];
+  1111→
+  1112→  return (
+  1113→    <motion.div
+  1114→      className="space-y-6 p-1"
+  1115→      variants={containerVariants}
+  1116→      initial="hidden"
+  1117→      animate="visible"
+  1118→    >
+  1119→      {/* ── Data Source Configuration ── */}
+  1120→      <motion.div variants={itemVariants}>
+  1121→        <SectionTitle icon={Database}>Data Source Configuration</SectionTitle>
+  1122→        <Card className="glass-card p-5">
+  1123→          <div className="space-y-0 divide-y" style={{ "--tw-divide-opacity": 1, borderColor: "rgba(255,255,255,0.04)" } as React.CSSProperties}>
+  1124→            {dataSources.map((source, i) => (
+  1125→              <motion.div
+  1126→                key={source.id}
+  1127→                className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4 py-4 first:pt-0 last:pb-0"
+  1128→                style={{
+  1129→                  borderBottom:
+  1130→                    i < dataSources.length - 1
+  1131→                      ? "1px solid rgba(255,255,255,0.04)"
+  1132→                      : "none",
+  1133→                }}
+  1134→                initial={{ opacity: 0, x: -10 }}
+  1135→                animate={{ opacity: 1, x: 0 }}
+  1136→                transition={{ delay: 0.2 + i * 0.05 }}
+  1137→              >
+  1138→                <div className="flex items-center gap-3 flex-1 min-w-0">
+  1139→                  <Switch
+  1140→                    checked={source.enabled}
+  1141→                    className="data-[state=checked]:bg-[#00D4AA] data-[state=unchecked]:bg-[rgba(255,255,255,0.1)]"
+  1142→                    aria-label={`Toggle ${source.label}`}
+  1143→                  />
+  1144→                  <div className="min-w-0">
+  1145→                    <div
+  1146→                      className="text-sm font-medium truncate"
+  1147→                      style={{ color: "#e8ecf1" }}
+  1148→                    >
+  1149→                      {source.label}
+  1150→                    </div>
+  1151→                    <div className="flex items-center gap-1.5 mt-0.5">
+  1152→                      <span
+  1153→                        className="h-1.5 w-1.5 rounded-full flex-shrink-0"
+  1154→                        style={{ backgroundColor: source.statusColor }}
+  1155→                      />
+  1156→                      <span
+  1157→                        className="text-xs truncate"
+  1158→                        style={{ color: "#4a5568" }}
+  1159→                      >
+  1160→                        {source.status}
+  1161→                      </span>
+  1162→                    </div>
+  1163→                  </div>
+  1164→                </div>
+  1165→                <Badge
+  1166→                  className="text-[10px] px-1.5 py-0 border-0 font-mono flex-shrink-0 w-fit"
+  1167→                  style={{
+  1168→                    backgroundColor:
+  1169→                      source.type === "LIVE"
+  1170→                        ? "rgba(0,212,170,0.12)"
+  1171→                        : source.type === "BACKEND"
+  1172→                        ? "rgba(123,97,255,0.12)"
+  1173→                        : "rgba(74,85,104,0.12)",
+  1174→                    color:
+  1175→                      source.type === "LIVE"
+  1176→                        ? "#00D4AA"
+  1177→                        : source.type === "BACKEND"
+  1178→                        ? "#7B61FF"
+  1179→                        : "#4a5568",
+  1180→                  }}
+  1181→                >
+  1182→                  {source.type}
+  1183→                </Badge>
+  1184→              </motion.div>
+  1185→            ))}
+  1186→          </div>
+  1187→        </Card>
+  1188→      </motion.div>
+  1189→
+  1190→      {/* ── Live Data Indicators Legend ── */}
+  1191→      <motion.div variants={itemVariants}>
+  1192→        <SectionTitle icon={Info}>Live Data Indicators</SectionTitle>
+  1193→        <Card className="glass-card p-5">
+  1194→          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+  1195→            {dataSourceLegend.map((item, i) => (
+  1196→              <motion.div
+  1197→                key={item.type}
+  1198→                className="flex items-start gap-3"
+  1199→                initial={{ opacity: 0, y: 10 }}
+  1200→                animate={{ opacity: 1, y: 0 }}
+  1201→                transition={{ delay: 0.4 + i * 0.1 }}
+  1202→              >
+  1203→                <div
+  1204→                  className="p-2 rounded-lg flex-shrink-0 mt-0.5"
+  1205→                  style={{ backgroundColor: `${item.dot}15` }}
+  1206→                >
+  1207→                  <Circle
+  1208→                    className="h-4 w-4 fill-current"
+  1209→                    style={{ color: item.dot }}
+  1210→                  />
+  1211→                </div>
+  1212→                <div>
+  1213→                  <div
+  1214→                    className="text-sm font-semibold font-mono"
+  1215→                    style={{ color: item.dot }}
+  1216→                  >
+  1217→                    {item.type}
+  1218→                  </div>
+  1219→                  <div
+  1220→                    className="text-xs mt-0.5 leading-relaxed"
+  1221→                    style={{ color: "#8b95a5" }}
+  1222→                  >
+  1223→                    {item.description}
+  1224→                  </div>
+  1225→                </div>
+  1226→              </motion.div>
+  1227→            ))}
+  1228→          </div>
+  1229→        </Card>
+  1230→      </motion.div>
+  1231→
+  1232→      {/* ── API Configuration ── */}
+  1233→      <motion.div variants={itemVariants}>
+  1234→        <SectionTitle icon={Settings}>API Configuration</SectionTitle>
+  1235→        <Card className="glass-card p-5">
+  1236→          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  1237→            {/* Backend URL */}
+  1238→            <motion.div
+  1239→              className="space-y-2"
+  1240→              initial={{ opacity: 0, y: 10 }}
+  1241→              animate={{ opacity: 1, y: 0 }}
+  1242→              transition={{ delay: 0.3 }}
+  1243→            >
+  1244→              <Label
+  1245→                className="text-xs font-semibold tracking-wider uppercase"
+  1246→                style={{ color: "#8b95a5" }}
+  1247→              >
+  1248→                Backend URL
+  1249→              </Label>
+  1250→              <Input
+  1251→                className="font-mono text-sm bg-[rgba(255,255,255,0.04)] border-[rgba(255,255,255,0.06)] text-[#e8ecf1] focus:border-[rgba(0,212,170,0.5)] placeholder:text-[#4a5568]"
+  1252→                defaultValue="http://localhost:5000"
+  1253→                placeholder="http://localhost:5000"
+  1254→              />
+  1255→              <p className="text-xs" style={{ color: "#4a5568" }}>
+  1256→                TRION oracle_api backend endpoint
+  1257→              </p>
+  1258→            </motion.div>
+  1259→
+  1260→            {/* WebSocket URL */}
+  1261→            <motion.div
+  1262→              className="space-y-2"
+  1263→              initial={{ opacity: 0, y: 10 }}
+  1264→              animate={{ opacity: 1, y: 0 }}
+  1265→              transition={{ delay: 0.4 }}
+  1266→            >
+  1267→              <Label
+  1268→                className="text-xs font-semibold tracking-wider uppercase"
+  1269→                style={{ color: "#8b95a5" }}
+  1270→              >
+  1271→                WebSocket URL
+  1272→              </Label>
+  1273→              <Input
+  1274→                className="font-mono text-sm bg-[rgba(255,255,255,0.04)] border-[rgba(255,255,255,0.06)] text-[#e8ecf1] focus:border-[rgba(0,212,170,0.5)] placeholder:text-[#4a5568]"
+  1275→                defaultValue="ws://localhost:5000/ws"
+  1276→                placeholder="ws://localhost:5000/ws"
+  1277→              />
+  1278→              <p className="text-xs" style={{ color: "#4a5568" }}>
+  1279→                Real-time signal stream endpoint
+  1280→              </p>
+  1281→            </motion.div>
+  1282→
+  1283→            {/* Refresh interval slider */}
+  1284→            <motion.div
+  1285→              className="space-y-3 lg:col-span-2"
+  1286→              initial={{ opacity: 0, y: 10 }}
+  1287→              animate={{ opacity: 1, y: 0 }}
+  1288→              transition={{ delay: 0.5 }}
+  1289→            >
+  1290→              <div className="flex items-center justify-between">
+  1291→                <Label
+  1292→                  className="text-xs font-semibold tracking-wider uppercase"
+  1293→                  style={{ color: "#8b95a5" }}
+  1294→                >
+  1295→                  Refresh Interval
+  1296→                </Label>
+  1297→                <span
+  1298→                  className="text-sm font-mono font-bold"
+  1299→                  style={{ color: "#00D4AA" }}
+  1300→                >
+  1301→                  5s
+  1302→                </span>
+  1303→              </div>
+  1304→              <Slider
+  1305→                defaultValue={[5]}
+  1306→                min={1}
+  1307→                max={30}
+  1308→                step={1}
+  1309→                className="[&_[role=slider]]:bg-[#00D4AA] [&_[role=slider]]:border-[#00D4AA]"
+  1310→              />
+  1311→              <div className="flex justify-between text-xs" style={{ color: "#4a5568" }}>
+  1312→                <span>1s</span>
+  1313→                <span>15s</span>
+  1314→                <span>30s</span>
+  1315→              </div>
+  1316→            </motion.div>
+  1317→
+  1318→            {/* Theme toggle */}
+  1319→            <motion.div
+  1320→              className="flex items-center justify-between lg:col-span-2 py-3 px-4 rounded-lg"
+  1321→              style={{ backgroundColor: "rgba(255,255,255,0.02)" }}
+  1322→              initial={{ opacity: 0, y: 10 }}
+  1323→              animate={{ opacity: 1, y: 0 }}
+  1324→              transition={{ delay: 0.6 }}
+  1325→            >
+  1326→              <div>
+  1327→                <div
+  1328→                  className="text-sm font-medium"
+  1329→                  style={{ color: "#e8ecf1" }}
+  1330→                >
+  1331→                  Theme
+  1332→                </div>
+  1333→                <div className="text-xs mt-0.5" style={{ color: "#4a5568" }}>
+  1334→                  Dark mode is currently the only available theme
+  1335→                </div>
+  1336→              </div>
+  1337→              <div className="flex items-center gap-3">
+  1338→                <span className="text-xs" style={{ color: "#8b95a5" }}>
+  1339→                  Dark
+  1340→                </span>
+  1341→                <Switch
+  1342→                  checked={true}
+  1343→                  disabled={true}
+  1344→                  className="data-[state=checked]:bg-[#00D4AA] opacity-70"
+  1345→                  aria-label="Theme toggle"
+  1346→                />
+  1347→                <span className="text-xs" style={{ color: "#4a5568" }}>
+  1348→                  Light
+  1349→                </span>
+  1350→              </div>
+  1351→            </motion.div>
+  1352→          </div>
+  1353→        </Card>
+  1354→      </motion.div>
+  1355→
+  1356→      {/* ── About TRION Protocol ── */}
+  1357→      <motion.div variants={itemVariants}>
+  1358→        <SectionTitle icon={FileCode2}>About TRION Protocol</SectionTitle>
+  1359→        <Card className="glass-card p-6">
+  1360→          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+  1361→            {/* Left: Logo area and version */}
+  1362→            <div className="space-y-4">
+  1363→              <motion.div
+  1364→                className="flex items-center gap-3"
+  1365→                initial={{ opacity: 0, scale: 0.95 }}
+  1366→                animate={{ opacity: 1, scale: 1 }}
+  1367→                transition={{ delay: 0.3 }}
+  1368→              >
+  1369→                <div
+  1370→                  className="p-3 rounded-xl"
+  1371→                  style={{ backgroundColor: "rgba(0,212,170,0.1)" }}
+  1372→                >
+  1373→                  <Shield className="h-8 w-8" style={{ color: "#00D4AA" }} />
+  1374→                </div>
+  1375→                <div>
+  1376→                  <h4
+  1377→                    className="text-lg font-bold"
+  1378→                    style={{ color: "#e8ecf1" }}
+  1379→                  >
+  1380→                    TRION Protocol
+  1381→                  </h4>
+  1382→                  <p className="text-xs" style={{ color: "#8b95a5" }}>
+  1383→                    Coherence-Preserving Oracle Network
+  1384→                  </p>
+  1385→                </div>
+  1386→              </motion.div>
+  1387→
+  1388→              <div className="space-y-2">
+  1389→                <div className="flex items-center justify-between">
+  1390→                  <span className="text-xs" style={{ color: "#8b95a5" }}>
+  1391→                    Version
+  1392→                  </span>
+  1393→                  <span
+  1394→                    className="text-xs font-mono font-semibold"
+  1395→                    style={{ color: "#e8ecf1" }}
+  1396→                  >
+  1397→                    v1.0.0
+  1398→                  </span>
+  1399→                </div>
+  1400→                <div className="flex items-center justify-between">
+  1401→                  <span className="text-xs" style={{ color: "#8b95a5" }}>
+  1402→                    License
+  1403→                  </span>
+  1404→                  <span
+  1405→                    className="text-xs font-mono font-semibold"
+  1406→                    style={{ color: "#e8ecf1" }}
+  1407→                  >
+  1408→                    CC0
+  1409→                  </span>
+  1410→                </div>
+  1411→              </div>
+  1412→
+  1413→              {/* Master Equation */}
+  1414→              <motion.div
+  1415→                className="p-4 rounded-lg mt-4"
+  1416→                style={{
+  1417→                  backgroundColor: "rgba(0,212,170,0.05)",
+  1418→                  border: "1px solid rgba(0,212,170,0.15)",
+  1419→                }}
+  1420→                initial={{ opacity: 0, y: 10 }}
+  1421→                animate={{ opacity: 1, y: 0 }}
+  1422→                transition={{ delay: 0.5 }}
+  1423→              >
+  1424→                <div
+  1425→                  className="text-[10px] uppercase tracking-widest mb-2 font-semibold"
+  1426→                  style={{ color: "#00D4AA" }}
+  1427→                >
+  1428→                  Master Equation
+  1429→                </div>
+  1430→                <div
+  1431→                  className="font-mono text-sm leading-relaxed"
+  1432→                  style={{ color: "#e8ecf1" }}
+  1433→                >
+  1434→                  T(t) = [C(t) ≥ Θ(t)] · C(t) · e^M_moat
+  1435→                </div>
+  1436→                <p className="text-xs mt-2" style={{ color: "#4a5568" }}>
+  1437→                  Coherence-preserving signal truth function with
+  1438→                  manipulation-resistance exponent
+  1439→                </p>
+  1440→              </motion.div>
+  1441→            </div>
+  1442→
+  1443→            {/* Right: Stats grid */}
+  1444→            <div className="grid grid-cols-2 gap-3">
+  1445→              {[
+  1446→                {
+  1447→                  label: "Programming Languages",
+  1448→                  value: "12",
+  1449→                  color: "#7B61FF",
+  1450→                  icon: Code2,
+  1451→                },
+  1452→                {
+  1453→                  label: "Chains",
+  1454→                  value: "100",
+  1455→                  color: "#00D4AA",
+  1456→                  icon: GitBranch,
+  1457→                },
+  1458→                {
+  1459→                  label: "VM Families",
+  1460→                  value: "15",
+  1461→                  color: "#00C8DC",
+  1462→                  icon: Layers,
+  1463→                },
+  1464→                {
+  1465→                  label: "Smart Contracts",
+  1466→                  value: "25",
+  1467→                  color: "#FFD93D",
+  1468→                  icon: FileCode2,
+  1469→                },
+  1470→                {
+  1471→                  label: "Lines of Code",
+  1472→                  value: "106,000+",
+  1473→                  color: "#FF8C42",
+  1474→                  icon: FileCode2,
+  1475→                },
+  1476→                {
+  1477→                  label: "API Routes",
+  1478→                  value: "345+",
+  1479→                  color: "#FF6B6B",
+  1480→                  icon: Server,
+  1481→                },
+  1482→              ].map((stat, i) => (
+  1483→                <motion.div
+  1484→                  key={stat.label}
+  1485→                  className="glass-card-elevated p-4 flex flex-col items-center text-center"
+  1486→                  initial={{ opacity: 0, scale: 0.9 }}
+  1487→                  animate={{ opacity: 1, scale: 1 }}
+  1488→                  transition={{ delay: 0.4 + i * 0.07 }}
+  1489→                  whileHover={{ scale: 1.03 }}
+  1490→                >
+  1491→                  <stat.icon
+  1492→                    className="h-5 w-5 mb-2"
+  1493→                    style={{ color: stat.color }}
+  1494→                  />
+  1495→                  <div
+  1496→                    className="text-2xl font-bold"
+  1497→                    style={{ color: stat.color }}
+  1498→                  >
+  1499→                    {stat.value}
+  1500→                  </div>
+  1501→                  <div
+  1502→                    className="text-xs mt-1"
+  1503→                    style={{ color: "#8b95a5" }}
+  1504→                  >
+  1505→                    {stat.label}
+  1506→                  </div>
+  1507→                </motion.div>
+  1508→              ))}
+  1509→            </div>
+  1510→          </div>
+  1511→        </Card>
+  1512→      </motion.div>
+  1513→    </motion.div>
+  1514→  );
+  1515→}

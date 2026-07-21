@@ -1,0 +1,1467 @@
+     1→"use client";
+     2→
+     3→import { motion } from "framer-motion";
+     4→import {
+     5→  Card,
+     6→  CardContent,
+     7→  CardHeader,
+     8→  CardTitle,
+     9→} from "@/components/ui/card";
+    10→import { Badge } from "@/components/ui/badge";
+    11→import { Progress } from "@/components/ui/progress";
+    12→import { ScrollArea } from "@/components/ui/scroll-area";
+    13→import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+    14→import {
+    15→  Table,
+    16→  TableBody,
+    17→  TableCell,
+    18→  TableHead,
+    19→  TableHeader,
+    20→  TableRow,
+    21→} from "@/components/ui/table";
+    22→import { Input } from "@/components/ui/input";
+    23→import {
+    24→  BarChart,
+    25→  Bar,
+    26→  XAxis,
+    27→  YAxis,
+    28→  CartesianGrid,
+    29→  Tooltip,
+    30→  ResponsiveContainer,
+    31→  PieChart,
+    32→  Pie,
+    33→  Cell,
+    34→  Tooltip as RechartsTooltip,
+    35→} from "recharts";
+    36→import {
+    37→  Check,
+    38→  X,
+    39→  Search,
+    40→  Activity,
+    41→  Radio,
+    42→  Database,
+    43→  Cpu,
+    44→  HardDrive,
+    45→  Globe,
+    46→  Shield,
+    47→  ArrowRight,
+    48→  Link2,
+    49→  TrendingUp,
+    50→  AlertTriangle,
+    51→  Eye,
+    52→  Gavel,
+    53→  Users,
+    54→  FileCheck,
+    55→  Layers,
+    56→  Code2,
+    57→  Lock,
+    58→  Box,
+    59→  Zap,
+    60→  Circle,
+    61→} from "lucide-react";
+    62→import {
+    63→  RELAYER_STATUS,
+    64→  GOVERNANCE_ITEMS,
+    65→  FALSIFIABILITY,
+    66→  BEO_ENTITIES,
+    67→  DEPLOYMENTS,
+    68→  CHAINS,
+    69→  VM_COLORS,
+    70→  type RelayerInfo,
+    71→  type GovernanceItem,
+    72→  type FalsifiabilityItem,
+    73→  type BEOEntity,
+    74→  type ContractInfo,
+    75→} from "@/lib/trion-data";
+    76→
+    77→// ─── Shared Animation Variants ──────────────────────────────────
+    78→const containerVariants = {
+    79→  hidden: { opacity: 0 },
+    80→  visible: {
+    81→    opacity: 1,
+    82→    transition: { staggerChildren: 0.06, delayChildren: 0.05 },
+    83→  },
+    84→};
+    85→
+    86→const itemVariants = {
+    87→  hidden: { opacity: 0, y: 18 },
+    88→  visible: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" } },
+    89→};
+    90→
+    91→const RELAYER_COLORS = [
+    92→  "#00D4AA",
+    93→  "#7B61FF",
+    94→  "#FF8C42",
+    95→  "#FFD93D",
+    96→  "#627EEA",
+    97→  "#FF6B6B",
+    98→  "#6FBCF0",
+    99→];
+   100→
+   101→// ─── Mini Sparkline SVG ─────────────────────────────────────────
+   102→function MiniSparkline({
+   103→  data,
+   104→  color = "#00D4AA",
+   105→  width = 120,
+   106→  height = 32,
+   107→}: {
+   108→  data: number[];
+   109→  color?: string;
+   110→  width?: number;
+   111→  height?: number;
+   112→}) {
+   113→  if (data.length < 2) return null;
+   114→  const min = Math.min(...data);
+   115→  const max = Math.max(...data);
+   116→  const range = max - min || 1;
+   117→  const points = data
+   118→    .map((v, i) => {
+   119→      const x = (i / (data.length - 1)) * width;
+   120→      const y = height - ((v - min) / range) * (height - 4) - 2;
+   121→      return `${x},${y}`;
+   122→    })
+   123→    .join(" ");
+   124→  return (
+   125→    <svg width={width} height={height} className="overflow-visible">
+   126→      <defs>
+   127→        <linearGradient id={`grad-${color.slice(1)}`} x1="0" y1="0" x2="0" y2="1">
+   128→          <stop offset="0%" stopColor={color} stopOpacity={0.3} />
+   129→          <stop offset="100%" stopColor={color} stopOpacity={0} />
+   130→        </linearGradient>
+   131→      </defs>
+   132→      <polygon
+   133→        points={`0,${height} ${points} ${width},${height}`}
+   134→        fill={`url(#grad-${color.slice(1)})`}
+   135→      />
+   136→      <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" />
+   137→    </svg>
+   138→  );
+   139→}
+   140→
+   141→// ─── Status Dot ──────────────────────────────────────────────────
+   142→function StatusDot({ color = "#00D4AA" }: { color?: string }) {
+   143→  return (
+   144→    <span className="relative flex h-2.5 w-2.5">
+   145→      <span
+   146→        className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60"
+   147→        style={{ backgroundColor: color }}
+   148→      />
+   149→      <span
+   150→        className="relative inline-flex h-2.5 w-2.5 rounded-full"
+   151→        style={{ backgroundColor: color }}
+   152→      />
+   153→    </span>
+   154→  );
+   155→}
+   156→
+   157→// ═══════════════════════════════════════════════════════════════════
+   158→// 1. RELAYERS PAGE
+   159→// ═══════════════════════════════════════════════════════════════════
+   160→export function RelayersPage() {
+   161→  const relayerChartData = [
+   162→    { hour: "00", evm: 4200, extended: 2400, native: 810, og_da: 320, og_compute: 180 },
+   163→    { hour: "04", evm: 3100, extended: 1800, native: 620, og_da: 280, og_compute: 150 },
+   164→    { hour: "08", evm: 5600, extended: 3200, native: 920, og_da: 410, og_compute: 250 },
+   165→    { hour: "12", evm: 8200, extended: 4800, native: 1340, og_da: 580, og_compute: 380 },
+   166→    { hour: "16", evm: 7400, extended: 4200, native: 1180, og_da: 510, og_compute: 340 },
+   167→    { hour: "20", evm: 6100, extended: 3600, native: 980, og_da: 440, og_compute: 280 },
+   168→  ];
+   169→
+   170→  const ogIntegrations = [
+   171→    { name: "Storage", status: "active", icon: HardDrive, detail: "2.4 TB stored", color: "#00D4AA" },
+   172→    { name: "DA", status: "active", icon: Database, detail: "12,847 blobs/day", color: "#7B61FF" },
+   173→    { name: "Compute", status: "active", icon: Cpu, detail: "847 req/min", color: "#FF8C42" },
+   174→    { name: "KV", status: "active", icon: Layers, detail: "4.2K ops/min", color: "#FFD93D" },
+   175→    { name: "Chain", status: "active", icon: Globe, detail: "Block 892,412", color: "#627EEA" },
+   176→  ];
+   177→
+   178→  const architectureSteps = [
+   179→    { name: "Chain Indexers", lang: "Rust", icon: Code2, color: "#CE422B" },
+   180→    { name: "Core Engine", lang: "Python", icon: Activity, color: "#3776AB" },
+   181→    { name: "Relayers", lang: "JavaScript", icon: Radio, color: "#F7DF1E" },
+   182→    { name: "Smart Contracts", lang: "Solidity", icon: Lock, color: "#627EEA" },
+   183→    { name: "0G Storage/DA", lang: "Go", icon: Database, color: "#00ADD8" },
+   184→  ];
+   185→
+   186→  return (
+   187→    <motion.div
+   188→      className="space-y-6"
+   189→      variants={containerVariants}
+   190→      initial="hidden"
+   191→      animate="visible"
+   192→    >
+   193→      {/* Section Header */}
+   194→      <motion.div variants={itemVariants}>
+   195→        <h2 className="text-2xl font-bold text-[#e8ecf1] flex items-center gap-3">
+   196→          <Radio className="h-6 w-6 text-[#00D4AA]" />
+   197→          Relayer Infrastructure
+   198→        </h2>
+   199→        <p className="text-sm text-[#8b95a5] mt-1">
+   200→          Real-time cross-chain signal relay and 0G integration status
+   201→        </p>
+   202→      </motion.div>
+   203→
+   204→      {/* 7 Relayer Status Cards */}
+   205→      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+   206→        {RELAYER_STATUS.map((r: RelayerInfo, idx: number) => (
+   207→          <motion.div key={r.name} variants={itemVariants}>
+   208→            <Card className="glass-card overflow-hidden relative">
+   209→              {/* Left gradient border */}
+   210→              <div
+   211→                className="absolute left-0 top-0 bottom-0 w-[3px]"
+   212→                style={{
+   213→                  background: `linear-gradient(to bottom, ${RELAYER_COLORS[idx]}, transparent)`,
+   214→                }}
+   215→              />
+   216→              <CardContent className="p-4 pl-5">
+   217→                <div className="flex items-center justify-between mb-3">
+   218→                  <div className="flex items-center gap-2">
+   219→                    <StatusDot color={RELAYER_COLORS[idx]} />
+   220→                    <span className="text-sm font-semibold text-[#e8ecf1]">
+   221→                      {r.name}
+   222→                    </span>
+   223→                  </div>
+   224→                  <Badge
+   225→                    variant="outline"
+   226→                    className="text-[10px] uppercase tracking-wider"
+   227→                    style={{
+   228→                      borderColor: "rgba(0,212,170,0.3)",
+   229→                      color: "#00D4AA",
+   230→                    }}
+   231→                  >
+   232→                    {r.status}
+   233→                  </Badge>
+   234→                </div>
+   235→                <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
+   236→                  <div className="flex justify-between">
+   237→                    <span className="text-[#8b95a5]">Chains</span>
+   238→                    <span className="text-[#e8ecf1] font-medium tabular-nums">
+   239→                      {r.chains}
+   240→                    </span>
+   241→                  </div>
+   242→                  <div className="flex justify-between">
+   243→                    <span className="text-[#8b95a5]">Throughput</span>
+   244→                    <span className="text-[#e8ecf1] font-medium tabular-nums">
+   245→                      {r.throughput}
+   246→                    </span>
+   247→                  </div>
+   248→                  <div className="flex justify-between">
+   249→                    <span className="text-[#8b95a5]">Last TX</span>
+   250→                    <span className="text-[#e8ecf1] tabular-nums">{r.lastTx}</span>
+   251→                  </div>
+   252→                  <div className="flex justify-between">
+   253→                    <span className="text-[#8b95a5]">Uptime</span>
+   254→                    <span
+   255→                      className="font-medium tabular-nums"
+   256→                      style={{ color: "#00D4AA" }}
+   257→                    >
+   258→                      {r.uptime}
+   259→                    </span>
+   260→                  </div>
+   261→                </div>
+   262→              </CardContent>
+   263→            </Card>
+   264→          </motion.div>
+   265→        ))}
+   266→      </div>
+   267→
+   268→      {/* Architecture Flow Diagram */}
+   269→      <motion.div variants={itemVariants}>
+   270→        <h3 className="text-sm font-semibold text-[#8b95a5] uppercase tracking-wider mb-3">
+   271→          Relayer Architecture
+   272→        </h3>
+   273→        <div className="flex flex-wrap items-center gap-2">
+   274→          {architectureSteps.map((step, idx) => (
+   275→            <div key={step.name} className="flex items-center gap-2">
+   276→              <Card className="glass-card p-3 min-w-[140px]">
+   277→                <div className="flex items-center gap-2 mb-1">
+   278→                  <step.icon className="h-3.5 w-3.5" style={{ color: step.color }} />
+   279→                  <span className="text-xs font-semibold text-[#e8ecf1]">
+   280→                    {step.name}
+   281→                  </span>
+   282→                </div>
+   283→                <span
+   284→                  className="text-[10px] font-mono px-1.5 py-0.5 rounded"
+   285→                  style={{
+   286→                    backgroundColor: `${step.color}18`,
+   287→                    color: step.color,
+   288→                  }}
+   289→                >
+   290→                  {step.lang}
+   291→                </span>
+   292→              </Card>
+   293→              {idx < architectureSteps.length - 1 && (
+   294→                <ArrowRight className="h-4 w-4 text-[#4a5568] flex-shrink-0" />
+   295→              )}
+   296→            </div>
+   297→          ))}
+   298→        </div>
+   299→      </motion.div>
+   300→
+   301→      {/* Stacked Bar Chart: Signals Published (24h) */}
+   302→      <motion.div variants={itemVariants}>
+   303→        <Card className="glass-card">
+   304→          <CardHeader className="pb-2">
+   305→            <CardTitle className="text-sm font-semibold text-[#e8ecf1]">
+   306→              Signals Published by Relayer (24h)
+   307→            </CardTitle>
+   308→          </CardHeader>
+   309→          <CardContent className="pt-0">
+   310→            <div className="h-[240px]">
+   311→              <ResponsiveContainer width="100%" height="100%">
+   312→                <BarChart
+   313→                  data={relayerChartData}
+   314→                  margin={{ top: 8, right: 8, left: -10, bottom: 0 }}
+   315→                >
+   316→                  <CartesianGrid
+   317→                    strokeDasharray="3 3"
+   318→                    stroke="#1a1f2b"
+   319→                    vertical={false}
+   320→                  />
+   321→                  <XAxis
+   322→                    dataKey="hour"
+   323→                    tick={{ fill: "#4a5568", fontSize: 11 }}
+   324→                    axisLine={{ stroke: "#1a1f2b" }}
+   325→                    tickLine={false}
+   326→                  />
+   327→                  <YAxis
+   328→                    tick={{ fill: "#4a5568", fontSize: 11 }}
+   329→                    axisLine={{ stroke: "#1a1f2b" }}
+   330→                    tickLine={false}
+   331→                  />
+   332→                  <Tooltip
+   333→                    contentStyle={{
+   334→                      backgroundColor: "#161b25",
+   335→                      border: "1px solid rgba(255,255,255,0.08)",
+   336→                      borderRadius: "8px",
+   337→                      color: "#e8ecf1",
+   338→                      fontSize: 12,
+   339→                    }}
+   340→                    itemStyle={{ color: "#e8ecf1" }}
+   341→                    labelStyle={{ color: "#8b95a5" }}
+   342→                  />
+   343→                  <Bar dataKey="evm" stackId="a" fill="#00D4AA" radius={[0, 0, 0, 0]} />
+   344→                  <Bar dataKey="extended" stackId="a" fill="#7B61FF" />
+   345→                  <Bar dataKey="native" stackId="a" fill="#FF8C42" />
+   346→                  <Bar dataKey="og_da" stackId="a" fill="#FFD93D" />
+   347→                  <Bar dataKey="og_compute" stackId="a" fill="#627EEA" radius={[4, 4, 0, 0]} />
+   348→                </BarChart>
+   349→              </ResponsiveContainer>
+   350→            </div>
+   351→            <div className="flex flex-wrap gap-4 mt-3 text-[10px] text-[#8b95a5]">
+   352→              {[
+   353→                { label: "EVM", color: "#00D4AA" },
+   354→                { label: "Extended", color: "#7B61FF" },
+   355→                { label: "Native VM", color: "#FF8C42" },
+   356→                { label: "0G DA", color: "#FFD93D" },
+   357→                { label: "0G Compute", color: "#627EEA" },
+   358→              ].map((l) => (
+   359→                <div key={l.label} className="flex items-center gap-1.5">
+   360→                  <span
+   361→                    className="inline-block h-2 w-2 rounded-full"
+   362→                    style={{ backgroundColor: l.color }}
+   363→                  />
+   364→                  {l.label}
+   365→                </div>
+   366→              ))}
+   367→            </div>
+   368→          </CardContent>
+   369→        </Card>
+   370→      </motion.div>
+   371→
+   372→      {/* 0G Integration Status */}
+   373→      <motion.div variants={itemVariants}>
+   374→        <h3 className="text-sm font-semibold text-[#8b95a5] uppercase tracking-wider mb-3">
+   375→          0G Integration Status
+   376→        </h3>
+   377→        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+   378→          {ogIntegrations.map((og) => (
+   379→            <Card key={og.name} className="glass-card">
+   380→              <CardContent className="p-4 text-center">
+   381→                <og.icon className="h-5 w-5 mx-auto mb-2" style={{ color: og.color }} />
+   382→                <div className="text-xs font-semibold text-[#e8ecf1] mb-1">
+   383→                  {og.name}
+   384→                </div>
+   385→                <div className="text-[10px] text-[#8b95a5] mb-2">{og.detail}</div>
+   386→                <Badge
+   387→                  className="text-[9px] uppercase tracking-wider"
+   388→                  style={{
+   389→                    backgroundColor: `${og.color}20`,
+   390→                    color: og.color,
+   391→                    border: `1px solid ${og.color}30`,
+   392→                  }}
+   393→                >
+   394→                  {og.status}
+   395→                </Badge>
+   396→              </CardContent>
+   397→            </Card>
+   398→          ))}
+   399→        </div>
+   400→      </motion.div>
+   401→    </motion.div>
+   402→  );
+   403→}
+   404→
+   405→// ═══════════════════════════════════════════════════════════════════
+   406→// 2. GOVERNANCE PAGE
+   407→// ═══════════════════════════════════════════════════════════════════
+   408→export function GovernancePage() {
+   409→  const kpis = [
+   410→    { label: "Active Proposals", value: "3", icon: Gavel, color: "#00D4AA" },
+   411→    {
+   412→      label: "AWA Status",
+   413→      value: "3/4 MET",
+   414→      icon: FileCheck,
+   415→      color: "#7B61FF",
+   416→    },
+   417→    { label: "Validator HHI", value: "1,247", icon: Users, color: "#FFD93D" },
+   418→    {
+   419→      label: "Total Staked",
+   420→      value: "847K TRION",
+   421→      icon: Shield,
+   422→      color: "#FF8C42",
+   423→    },
+   424→  ];
+   425→
+   426→  const statusColor = (s: string) => {
+   427→    if (s === "active") return { bg: "rgba(0,212,212,0.12)", color: "#00D4DD" };
+   428→    if (s === "closed") return { bg: "rgba(107,114,128,0.15)", color: "#8b95a5" };
+   429→    if (s === "queued") return { bg: "rgba(255,217,61,0.12)", color: "#FFD93D" };
+   430→    return { bg: "rgba(107,114,128,0.15)", color: "#8b95a5" };
+   431→  };
+   432→
+   433→  const fStatusColor = (s: string) => {
+   434→    if (s === "PASSING") return { bg: "rgba(0,212,170,0.12)", color: "#00D4AA" };
+   435→    if (s === "MONITORING") return { bg: "rgba(255,217,61,0.12)", color: "#FFD93D" };
+   436→    if (s === "CONJECTURE") return { bg: "rgba(123,97,255,0.12)", color: "#7B61FF" };
+   437→    return { bg: "rgba(255,107,107,0.12)", color: "#FF6B6B" };
+   438→  };
+   439→
+   440→  const continents = [
+   441→    { name: "North America", validators: 8, color: "#00D4AA" },
+   442→    { name: "Europe", validators: 7, color: "#7B61FF" },
+   443→    { name: "Asia", validators: 5, color: "#FF8C42" },
+   444→    { name: "South America", validators: 3, color: "#FFD93D" },
+   445→  ];
+   446→
+   447→  return (
+   448→    <motion.div
+   449→      className="space-y-6"
+   450→      variants={containerVariants}
+   451→      initial="hidden"
+   452→      animate="visible"
+   453→    >
+   454→      {/* Header */}
+   455→      <motion.div variants={itemVariants}>
+   456→        <h2 className="text-2xl font-bold text-[#e8ecf1] flex items-center gap-3">
+   457→          <Gavel className="h-6 w-6 text-[#7B61FF]" />
+   458→          Governance & Falsifiability
+   459→        </h2>
+   460→        <p className="text-sm text-[#8b95a5] mt-1">
+   461→          Protocol governance, falsifiability tests, and validator diversity
+   462→        </p>
+   463→      </motion.div>
+   464→
+   465→      {/* KPI Cards */}
+   466→      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+   467→        {kpis.map((kpi) => (
+   468→          <motion.div key={kpi.label} variants={itemVariants}>
+   469→            <Card className="glass-card">
+   470→              <CardContent className="p-4">
+   471→                <kpi.icon
+   472→                  className="h-4 w-4 mb-2"
+   473→                  style={{ color: kpi.color }}
+   474→                />
+   475→                <div className="text-2xl font-bold text-[#e8ecf1] tabular-nums">
+   476→                  {kpi.value}
+   477→                </div>
+   478→                <div className="text-xs text-[#8b95a5] mt-1">{kpi.label}</div>
+   479→              </CardContent>
+   480→            </Card>
+   481→          </motion.div>
+   482→        ))}
+   483→      </div>
+   484→
+   485→      {/* Governance Proposals */}
+   486→      <motion.div variants={itemVariants}>
+   487→        <Card className="glass-card">
+   488→          <CardHeader className="pb-3">
+   489→            <CardTitle className="text-sm font-semibold text-[#e8ecf1]">
+   490→              Governance Proposals
+   491→            </CardTitle>
+   492→          </CardHeader>
+   493→          <CardContent className="pt-0">
+   494→            <ScrollArea className="max-h-[360px]">
+   495→              <div className="space-y-3 pr-3">
+   496→                {GOVERNANCE_ITEMS.map((g: GovernanceItem) => {
+   497→                  const sc = statusColor(g.status);
+   498→                  const ratio = Math.min(g.votes / g.quorum, 1);
+   499→                  return (
+   500→                    <div
+   501→                      key={g.id}
+   502→                      className="p-3 rounded-lg bg-[rgba(22,27,37,0.5)] border border-[rgba(255,255,255,0.04)]"
+   503→                    >
+   504→                      <div className="flex flex-wrap items-center gap-2 mb-1.5">
+   505→                        <span className="text-xs font-mono text-[#4a5568]">
+   506→                          {g.id}
+   507→                        </span>
+   508→                        <Badge
+   509→                          className="text-[10px] uppercase tracking-wider"
+   510→                          style={{
+   511→                            backgroundColor: sc.bg,
+   512→                            color: sc.color,
+   513→                            border: "none",
+   514→                          }}
+   515→                        >
+   516→                          {g.status}
+   517→                        </Badge>
+   518→                        <Badge
+   519→                          variant="outline"
+   520→                          className="text-[10px]"
+   521→                          style={{ borderColor: "rgba(255,255,255,0.08)", color: "#8b95a5" }}
+   522→                        >
+   523→                          {g.type}
+   524→                        </Badge>
+   525→                        <span className="ml-auto text-[10px] text-[#4a5568] tabular-nums">
+   526→                          {g.timeLeft}
+   527→                        </span>
+   528→                      </div>
+   529→                      <p className="text-xs text-[#e8ecf1] mb-2 leading-relaxed">
+   530→                        {g.title}
+   531→                      </p>
+   532→                      <div className="flex items-center gap-3">
+   533→                        <div className="flex-1 h-1.5 rounded-full bg-[rgba(255,255,255,0.06)]">
+   534→                          <div
+   535→                            className="h-full rounded-full progress-bar"
+   536→                            style={{
+   537→                              width: `${ratio * 100}%`,
+   538→                              backgroundColor: "#00D4AA",
+   539→                            }}
+   540→                          />
+   541→                        </div>
+   542→                        <span className="text-[10px] text-[#8b95a5] tabular-nums whitespace-nowrap">
+   543→                          {g.votes.toLocaleString()} / {g.quorum.toLocaleString()}
+   544→                        </span>
+   545→                      </div>
+   546→                    </div>
+   547→                  );
+   548→                })}
+   549→              </div>
+   550→            </ScrollArea>
+   551→          </CardContent>
+   552→        </Card>
+   553→      </motion.div>
+   554→
+   555→      {/* Falsifiability Registry Table */}
+   556→      <motion.div variants={itemVariants}>
+   557→        <Card className="glass-card">
+   558→          <CardHeader className="pb-3">
+   559→            <CardTitle className="text-sm font-semibold text-[#e8ecf1]">
+   560→              Falsifiability Registry (F1–F15)
+   561→            </CardTitle>
+   562→          </CardHeader>
+   563→          <CardContent className="pt-0">
+   564→            <Table>
+   565→              <TableHeader>
+   566→                <TableRow className="border-[rgba(255,255,255,0.06)] hover:bg-transparent">
+   567→                  <TableHead className="text-[10px] uppercase tracking-wider text-[#4a5568]">
+   568→                    ID
+   569→                  </TableHead>
+   570→                  <TableHead className="text-[10px] uppercase tracking-wider text-[#4a5568]">
+   571→                    Description
+   572→                  </TableHead>
+   573→                  <TableHead className="text-[10px] uppercase tracking-wider text-[#4a5568]">
+   574→                    Status
+   575→                  </TableHead>
+   576→                  <TableHead className="text-[10px] uppercase tracking-wider text-[#4a5568] text-right">
+   577→                    Metric
+   578→                  </TableHead>
+   579→                  <TableHead className="text-[10px] uppercase tracking-wider text-[#4a5568] text-right">
+   580→                    Threshold
+   581→                  </TableHead>
+   582→                </TableRow>
+   583→              </TableHeader>
+   584→              <TableBody>
+   585→                {FALSIFIABILITY.map((f: FalsifiabilityItem) => {
+   586→                  const fc = fStatusColor(f.status);
+   587→                  return (
+   588→                    <TableRow
+   589→                      key={f.id}
+   590→                      className="border-[rgba(255,255,255,0.04)] hover:bg-[rgba(22,27,37,0.4)]"
+   591→                    >
+   592→                      <TableCell className="text-xs font-mono text-[#7B61FF]">
+   593→                        {f.id}
+   594→                      </TableCell>
+   595→                      <TableCell className="text-xs text-[#8b95a5] max-w-[300px]">
+   596→                        {f.description}
+   597→                      </TableCell>
+   598→                      <TableCell>
+   599→                        <Badge
+   600→                          className="text-[10px] uppercase tracking-wider"
+   601→                          style={{
+   602→                            backgroundColor: fc.bg,
+   603→                            color: fc.color,
+   604→                            border: "none",
+   605→                          }}
+   606→                        >
+   607→                          {f.status}
+   608→                        </Badge>
+   609→                      </TableCell>
+   610→                      <TableCell className="text-xs text-[#e8ecf1] text-right tabular-nums font-medium">
+   611→                        {f.metric}
+   612→                      </TableCell>
+   613→                      <TableCell className="text-xs text-[#4a5568] text-right tabular-nums">
+   614→                        {f.threshold}
+   615→                      </TableCell>
+   616→                    </TableRow>
+   617→                  );
+   618→                })}
+   619→              </TableBody>
+   620→            </Table>
+   621→          </CardContent>
+   622→        </Card>
+   623→      </motion.div>
+   624→
+   625→      {/* Validator Diversity */}
+   626→      <motion.div variants={itemVariants}>
+   627→        <Card className="glass-card">
+   628→          <CardHeader className="pb-3">
+   629→            <CardTitle className="text-sm font-semibold text-[#e8ecf1]">
+   630→              Validator Diversity
+   631→            </CardTitle>
+   632→          </CardHeader>
+   633→          <CardContent className="pt-0">
+   634→            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+   635→              {continents.map((c) => (
+   636→                <div
+   637→                  key={c.name}
+   638→                  className="flex items-center gap-3 p-3 rounded-lg bg-[rgba(22,27,37,0.5)] border border-[rgba(255,255,255,0.04)]"
+   639→                >
+   640→                  <span
+   641→                    className="h-3 w-3 rounded-full flex-shrink-0"
+   642→                    style={{ backgroundColor: c.color }}
+   643→                  />
+   644→                  <div>
+   645→                    <div className="text-xs font-medium text-[#e8ecf1]">
+   646→                      {c.name}
+   647→                    </div>
+   648→                    <div className="text-[10px] text-[#8b95a5] tabular-nums">
+   649→                      {c.validators} validators
+   650→                    </div>
+   651→                  </div>
+   652→                </div>
+   653→              ))}
+   654→            </div>
+   655→          </CardContent>
+   656→        </Card>
+   657→      </motion.div>
+   658→
+   659→      {/* DW-BFT Consensus */}
+   660→      <motion.div variants={itemVariants}>
+   661→        <Card className="glass-card">
+   662→          <CardHeader className="pb-3">
+   663→            <CardTitle className="text-sm font-semibold text-[#e8ecf1]">
+   664→              DW-BFT Consensus
+   665→            </CardTitle>
+   666→          </CardHeader>
+   667→          <CardContent className="pt-0 space-y-4">
+   668→            <p className="text-xs text-[#8b95a5] leading-relaxed">
+   669→              Diversity-Weighted Byzantine Fault Tolerance uses geographic and
+   670→              behavioral decorrelation to ensure no single entity can dominate
+   671→              consensus. Each validator&apos;s weight is inversely proportional to
+   672→              their correlation with the mean validator behavior.
+   673→            </p>
+   674→            <div className="p-3 rounded-lg bg-[rgba(22,27,37,0.6)] border border-[rgba(255,255,255,0.06)]">
+   675→              <div className="text-xs font-mono text-[#00D4AA] text-center mb-1">
+   676→                d<sub>j</sub> = 1 &minus; corr(M<sub>j</sub>, M&#x0304;)
+   677→              </div>
+   678→              <p className="text-[10px] text-[#4a5568] text-center">
+   679→                Where M<sub>j</sub> is the behavior matrix of validator j, and
+   680→                M&#x0304; is the mean behavior across all validators.
+   681→              </p>
+   682→            </div>
+   683→            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+   684→              <div className="p-3 rounded-lg bg-[rgba(0,212,170,0.06)] border border-[rgba(0,212,170,0.15)]">
+   685→                <div className="text-[#00D4AA] font-semibold mb-1">
+   686→                  HHI &lt; 1,500
+   687→                </div>
+   688→                <div className="text-[#8b95a5]">Healthy — diverse validator set</div>
+   689→              </div>
+   690→              <div className="p-3 rounded-lg bg-[rgba(255,217,61,0.06)] border border-[rgba(255,217,61,0.15)]">
+   691→                <div className="text-[#FFD93D] font-semibold mb-1">
+   692→                  HHI 1,500–3,000
+   693→                </div>
+   694→                <div className="text-[#8b95a5]">Moderate — monitoring recommended</div>
+   695→              </div>
+   696→              <div className="p-3 rounded-lg bg-[rgba(255,107,107,0.06)] border border-[rgba(255,107,107,0.15)]">
+   697→                <div className="text-[#FF6B6B] font-semibold mb-1">
+   698→                  HHI &gt; 3,000
+   699→                </div>
+   700→                <div className="text-[#8b95a5]">Danger — emergency response</div>
+   701→              </div>
+   702→            </div>
+   703→          </CardContent>
+   704→        </Card>
+   705→      </motion.div>
+   706→    </motion.div>
+   707→  );
+   708→}
+   709→
+   710→// ═══════════════════════════════════════════════════════════════════
+   711→// 3. CONTRACTS PAGE
+   712→// ═══════════════════════════════════════════════════════════════════
+   713→export function ContractsPage() {
+   714→  const CONTRACTS: ContractInfo[] = [
+   715→    { name: "TRIONOracle.sol", language: "Solidity", chain: "Ethereum", status: "deployed", address: "0xA85B...4199b", verified: true, linesOfCode: 487, functions: 23, lastInteraction: "12s ago", type: "Oracle" },
+   716→    { name: "TRIONOracleV3.sol", language: "Solidity", chain: "Arbitrum", status: "deployed", address: "0x0471...0A87C", verified: true, linesOfCode: 623, functions: 31, lastInteraction: "8s ago", type: "Oracle" },
+   717→    { name: "TRIONFirewall.sol", language: "Solidity", chain: "Ethereum", status: "deployed", address: "0xBe00...48F0", verified: true, linesOfCode: 342, functions: 18, lastInteraction: "3s ago", type: "Firewall" },
+   718→    { name: "TRIONExecutionGate.sol", language: "Solidity", chain: "0G Chain", status: "deployed", address: "0x1d12...94237", verified: true, linesOfCode: 891, functions: 42, lastInteraction: "1s ago", type: "Execution" },
+   719→    { name: "TRIONProtectedVault.sol", language: "Solidity", chain: "Ethereum", status: "deployed", address: "0x3a7B...e91F", verified: true, linesOfCode: 256, functions: 15, lastInteraction: "45s ago", type: "Vault" },
+   720→    { name: "ConfidentialCohVault.sol", language: "Solidity", chain: "0G Chain", status: "deployed", address: "0x8Fc2...1a4B", verified: true, linesOfCode: 412, functions: 22, lastInteraction: "2m ago", type: "Vault" },
+   721→    { name: "AkashicProof.sol", language: "Solidity", chain: "BNB Chain", status: "deployed", address: "0x12D4...fE02", verified: true, linesOfCode: 178, functions: 12, lastInteraction: "5m ago", type: "Storage" },
+   722→    { name: "TRIONStaking.vy", language: "Vyper", chain: "Ethereum", status: "deployed", address: "0x5149...dC5e", verified: true, linesOfCode: 234, functions: 14, lastInteraction: "30s ago", type: "Staking" },
+   723→    { name: "TRIONToken.vy", language: "Vyper", chain: "Ethereum", status: "deployed", address: "0x4eF2...cE1A", verified: true, linesOfCode: 156, functions: 9, lastInteraction: "15s ago", type: "Token" },
+   724→    { name: "TRIONOracle.cairo", language: "Cairo", chain: "StarkNet", status: "deployed", address: "0x0abc...7890", verified: false, linesOfCode: 389, functions: 20, lastInteraction: "1m ago", type: "Oracle" },
+   725→    { name: "BEOAttestation.cairo", language: "Cairo", chain: "StarkNet", status: "deployed", address: "0x1def...4567", verified: false, linesOfCode: 267, functions: 16, lastInteraction: "3m ago", type: "Attestation" },
+   726→    { name: "BTCFiGuard.cairo", language: "Cairo", chain: "StarkNet", status: "deployed", address: "0x2ghi...3456", verified: false, linesOfCode: 198, functions: 11, lastInteraction: "10m ago", type: "Security" },
+   727→    { name: "trion_gate.fc", language: "FunC", chain: "TON", status: "deployed", address: "EQC...abc", verified: false, linesOfCode: 312, functions: 18, lastInteraction: "2m ago", type: "Gate" },
+   728→    { name: "trion_intent.fc", language: "FunC", chain: "TON", status: "deployed", address: "EQD...def", verified: false, linesOfCode: 245, functions: 14, lastInteraction: "5m ago", type: "Intent" },
+   729→    { name: "trion_liquidity.fc", language: "FunC", chain: "TON", status: "deployed", address: "EQE...ghi", verified: false, linesOfCode: 189, functions: 12, lastInteraction: "8m ago", type: "Liquidity" },
+   730→    { name: "trion_oracle.fc", language: "FunC", chain: "TON", status: "deploying", address: "—", verified: false, linesOfCode: 278, functions: 15, lastInteraction: "—", type: "Oracle" },
+   731→    { name: "TRIONOracle.near", language: "Rust/NEAR", chain: "NEAR", status: "deployed", address: "trion.oracle.near", verified: true, linesOfCode: 523, functions: 28, lastInteraction: "30s ago", type: "Oracle" },
+   732→    { name: "TRIONVault.near", language: "Rust/NEAR", chain: "NEAR", status: "deployed", address: "trion.vault.near", verified: true, linesOfCode: 341, functions: 19, lastInteraction: "2m ago", type: "Vault" },
+   733→    { name: "trion::oracle", language: "Move/Sui", chain: "Sui", status: "deploying", address: "—", verified: false, linesOfCode: 445, functions: 22, lastInteraction: "—", type: "Oracle" },
+   734→    { name: "trion::firewall", language: "Move/Sui", chain: "Sui", status: "auditing", address: "—", verified: false, linesOfCode: 312, functions: 17, lastInteraction: "—", type: "Firewall" },
+   735→    { name: "pallet-trion", language: "Rust/Substrate", chain: "Polkadot", status: "auditing", address: "—", verified: false, linesOfCode: 687, functions: 35, lastInteraction: "—", type: "Runtime" },
+   736→    { name: "trion-da", language: "CosmWasm", chain: "Cosmos", status: "deployed", address: "cosmos1...trion", verified: true, linesOfCode: 234, functions: 13, lastInteraction: "1m ago", type: "DA" },
+   737→    { name: "trion-indexer", language: "Rust", chain: "Multi", status: "deployed", address: "off-chain", verified: true, linesOfCode: 11091, functions: 89, lastInteraction: "1s ago", type: "Indexer" },
+   738→    { name: "living_security.py", language: "Python", chain: "Core", status: "deployed", address: "off-chain", verified: true, linesOfCode: 1203, functions: 67, lastInteraction: "1s ago", type: "Security" },
+   739→    { name: "signal_factory.py", language: "Python", chain: "Core", status: "deployed", address: "off-chain", verified: true, linesOfCode: 1080, functions: 54, lastInteraction: "1s ago", type: "Signals" },
+   740→  ];
+   741→
+   742→  const langColors: Record<string, string> = {
+   743→    Solidity: "#627EEA",
+   744→    Vyper: "#1A1A2E",
+   745→    Cairo: "#7B61FF",
+   746→    FunC: "#0088CC",
+   747→    "Rust/NEAR": "#CE422B",
+   748→    "Rust/Substrate": "#CE422B",
+   749→    Rust: "#CE422B",
+   750→    Python: "#3776AB",
+   751→    "Move/Sui": "#4DDFBA",
+   752→    CosmWasm: "#6F7390",
+   753→  };
+   754→
+   755→  const statusBadgeStyle = (s: string) => {
+   756→    switch (s) {
+   757→      case "deployed":
+   758→        return { bg: "rgba(0,212,170,0.12)", color: "#00D4AA" };
+   759→      case "auditing":
+   760→        return { bg: "rgba(255,217,61,0.12)", color: "#FFD93D" };
+   761→      case "deploying":
+   762→        return { bg: "rgba(98,126,234,0.12)", color: "#627EEA" };
+   763→      case "failed":
+   764→        return { bg: "rgba(255,107,107,0.12)", color: "#FF6B6B" };
+   765→      default:
+   766→        return { bg: "rgba(107,114,128,0.15)", color: "#8b95a5" };
+   767→    }
+   768→  };
+   769→
+   770→  // Language distribution for donut chart
+   771→  const langMap: Record<string, number> = {};
+   772→  CONTRACTS.forEach((c) => {
+   773→    langMap[c.language] = (langMap[c.language] || 0) + 1;
+   774→  });
+   775→  const langDistData = Object.entries(langMap).map(([name, value]) => ({
+   776→    name,
+   777→    value,
+   778→    color: langColors[name] || "#8b95a5",
+   779→  }));
+   780→
+   781→  // Contract types
+   782→  const typeMap: Record<string, number> = {};
+   783→  CONTRACTS.forEach((c) => {
+   784→    typeMap[c.type] = (typeMap[c.type] || 0) + 1;
+   785→  });
+   786→  const contractTypes = Object.entries(typeMap).sort((a, b) => b[1] - a[1]);
+   787→
+   788→  const totalContracts = CONTRACTS.length;
+   789→  const totalLanguages = Object.keys(langMap).length;
+   790→  const deployedCount = CONTRACTS.filter((c) => c.status === "deployed").length;
+   791→  const totalLines = CONTRACTS.reduce((s, c) => s + c.linesOfCode, 0);
+   792→
+   793→  const kpis = [
+   794→    { label: "Total Contracts", value: totalContracts.toString(), icon: Box, color: "#00D4AA" },
+   795→    { label: "Languages", value: totalLanguages.toString(), icon: Code2, color: "#7B61FF" },
+   796→    { label: "Deployed", value: deployedCount.toString(), icon: Check, color: "#FFD93D" },
+   797→    { label: "Total Lines", value: totalLines.toLocaleString(), icon: Layers, color: "#FF8C42" },
+   798→  ];
+   799→
+   800→  // Deployment map: which contracts on which chains
+   801→  const chainList = [...new Set(CONTRACTS.map((c) => c.chain))];
+   802→  const contractNames = CONTRACTS.map((c) => c.name);
+   803→  const deployMatrix = CONTRACTS.map((c) => ({
+   804→    name: c.name,
+   805→    chain: c.chain,
+   806→    status: c.status,
+   807→  }));
+   808→
+   809→  return (
+   810→    <motion.div
+   811→      className="space-y-6"
+   812→      variants={containerVariants}
+   813→      initial="hidden"
+   814→      animate="visible"
+   815→    >
+   816→      {/* Header */}
+   817→      <motion.div variants={itemVariants}>
+   818→        <h2 className="text-2xl font-bold text-[#e8ecf1] flex items-center gap-3">
+   819→          <Code2 className="h-6 w-6 text-[#627EEA]" />
+   820→          Smart Contracts
+   821→        </h2>
+   822→        <p className="text-sm text-[#8b95a5] mt-1">
+   823→          Multi-language contract deployment across 12+ chains
+   824→        </p>
+   825→      </motion.div>
+   826→
+   827→      {/* KPI Cards */}
+   828→      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+   829→        {kpis.map((kpi) => (
+   830→          <motion.div key={kpi.label} variants={itemVariants}>
+   831→            <Card className="glass-card">
+   832→              <CardContent className="p-4">
+   833→                <kpi.icon
+   834→                  className="h-4 w-4 mb-2"
+   835→                  style={{ color: kpi.color }}
+   836→                />
+   837→                <div className="text-2xl font-bold text-[#e8ecf1] tabular-nums">
+   838→                  {kpi.value}
+   839→                </div>
+   840→                <div className="text-xs text-[#8b95a5] mt-1">{kpi.label}</div>
+   841→              </CardContent>
+   842→            </Card>
+   843→          </motion.div>
+   844→        ))}
+   845→      </div>
+   846→
+   847→      {/* Contract Table */}
+   848→      <motion.div variants={itemVariants}>
+   849→        <Card className="glass-card">
+   850→          <CardHeader className="pb-3">
+   851→            <CardTitle className="text-sm font-semibold text-[#e8ecf1]">
+   852→              All Contracts
+   853→            </CardTitle>
+   854→          </CardHeader>
+   855→          <CardContent className="pt-0">
+   856→            <ScrollArea className="max-h-[420px]">
+   857→              <Table>
+   858→                <TableHeader>
+   859→                  <TableRow className="border-[rgba(255,255,255,0.06)] hover:bg-transparent">
+   860→                    <TableHead className="text-[10px] uppercase tracking-wider text-[#4a5568]">
+   861→                      Contract
+   862→                    </TableHead>
+   863→                    <TableHead className="text-[10px] uppercase tracking-wider text-[#4a5568]">
+   864→                      Language
+   865→                    </TableHead>
+   866→                    <TableHead className="text-[10px] uppercase tracking-wider text-[#4a5568]">
+   867→                      Chain
+   868→                    </TableHead>
+   869→                    <TableHead className="text-[10px] uppercase tracking-wider text-[#4a5568]">
+   870→                      Status
+   871→                    </TableHead>
+   872→                    <TableHead className="text-[10px] uppercase tracking-wider text-[#4a5568] text-right">
+   873→                      Functions
+   874→                    </TableHead>
+   875→                    <TableHead className="text-[10px] uppercase tracking-wider text-[#4a5568] text-right">
+   876→                      LOC
+   877→                    </TableHead>
+   878→                    <TableHead className="text-[10px] uppercase tracking-wider text-[#4a5568]">
+   879→                      Last Interaction
+   880→                    </TableHead>
+   881→                    <TableHead className="text-[10px] uppercase tracking-wider text-[#4a5568] text-center">
+   882→                      Verified
+   883→                    </TableHead>
+   884→                  </TableRow>
+   885→                </TableHeader>
+   886→                <TableBody>
+   887→                  {CONTRACTS.map((c: ContractInfo) => {
+   888→                    const ss = statusBadgeStyle(c.status);
+   889→                    const lc = langColors[c.language] || "#8b95a5";
+   890→                    return (
+   891→                      <TableRow
+   892→                        key={c.name}
+   893→                        className="border-[rgba(255,255,255,0.04)] hover:bg-[rgba(22,27,37,0.4)]"
+   894→                      >
+   895→                        <TableCell className="text-xs font-mono text-[#e8ecf1] max-w-[180px] truncate">
+   896→                          {c.name}
+   897→                        </TableCell>
+   898→                        <TableCell>
+   899→                          <Badge
+   900→                            className="text-[10px]"
+   901→                            style={{
+   902→                              backgroundColor: `${lc}20`,
+   903→                              color: lc,
+   904→                              border: `1px solid ${lc}30`,
+   905→                            }}
+   906→                          >
+   907→                            {c.language}
+   908→                          </Badge>
+   909→                        </TableCell>
+   910→                        <TableCell className="text-xs text-[#8b95a5]">
+   911→                          {c.chain}
+   912→                        </TableCell>
+   913→                        <TableCell>
+   914→                          <Badge
+   915→                            className="text-[10px] uppercase tracking-wider"
+   916→                            style={{ backgroundColor: ss.bg, color: ss.color, border: "none" }}
+   917→                          >
+   918→                            {c.status}
+   919→                          </Badge>
+   920→                        </TableCell>
+   921→                        <TableCell className="text-xs text-[#e8ecf1] text-right tabular-nums">
+   922→                          {c.functions}
+   923→                        </TableCell>
+   924→                        <TableCell className="text-xs text-[#8b95a5] text-right tabular-nums">
+   925→                          {c.linesOfCode.toLocaleString()}
+   926→                        </TableCell>
+   927→                        <TableCell className="text-xs text-[#4a5568] tabular-nums">
+   928→                          {c.lastInteraction}
+   929→                        </TableCell>
+   930→                        <TableCell className="text-center">
+   931→                          {c.verified ? (
+   932→                            <Check className="h-3.5 w-3.5 text-[#00D4AA] inline" />
+   933→                          ) : (
+   934→                            <X className="h-3.5 w-3.5 text-[#FF6B6B] inline" />
+   935→                          )}
+   936→                        </TableCell>
+   937→                      </TableRow>
+   938→                    );
+   939→                  })}
+   940→                </TableBody>
+   941→              </Table>
+   942→            </ScrollArea>
+   943→          </CardContent>
+   944→        </Card>
+   945→      </motion.div>
+   946→
+   947→      {/* Language Distribution Donut + Contract Types */}
+   948→      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+   949→        {/* Donut Chart */}
+   950→        <motion.div variants={itemVariants}>
+   951→          <Card className="glass-card">
+   952→            <CardHeader className="pb-2">
+   953→              <CardTitle className="text-sm font-semibold text-[#e8ecf1]">
+   954→                Language Distribution
+   955→              </CardTitle>
+   956→            </CardHeader>
+   957→            <CardContent className="pt-0">
+   958→              <div className="h-[260px] flex items-center justify-center">
+   959→                <ResponsiveContainer width="100%" height="100%">
+   960→                  <PieChart>
+   961→                    <Pie
+   962→                      data={langDistData}
+   963→                      cx="50%"
+   964→                      cy="50%"
+   965→                      innerRadius={55}
+   966→                      outerRadius={90}
+   967→                      paddingAngle={3}
+   968→                      dataKey="value"
+   969→                      stroke="none"
+   970→                    >
+   971→                      {langDistData.map((entry, idx) => (
+   972→                        <Cell key={idx} fill={entry.color} />
+   973→                      ))}
+   974→                    </Pie>
+   975→                    <RechartsTooltip
+   976→                      contentStyle={{
+   977→                        backgroundColor: "#161b25",
+   978→                        border: "1px solid rgba(255,255,255,0.08)",
+   979→                        borderRadius: "8px",
+   980→                        color: "#e8ecf1",
+   981→                        fontSize: 12,
+   982→                      }}
+   983→                      itemStyle={{ color: "#e8ecf1" }}
+   984→                    />
+   985→                  </PieChart>
+   986→                </ResponsiveContainer>
+   987→              </div>
+   988→              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+   989→                {langDistData.map((l) => (
+   990→                  <div key={l.name} className="flex items-center gap-1.5 text-[10px] text-[#8b95a5]">
+   991→                    <span
+   992→                      className="inline-block h-2 w-2 rounded-full"
+   993→                      style={{ backgroundColor: l.color }}
+   994→                    />
+   995→                    {l.name} ({l.value})
+   996→                  </div>
+   997→                ))}
+   998→              </div>
+   999→            </CardContent>
+  1000→          </Card>
+  1001→        </motion.div>
+  1002→
+  1003→        {/* Contract Types */}
+  1004→        <motion.div variants={itemVariants}>
+  1005→          <Card className="glass-card">
+  1006→            <CardHeader className="pb-2">
+  1007→              <CardTitle className="text-sm font-semibold text-[#e8ecf1]">
+  1008→                Contract Types
+  1009→              </CardTitle>
+  1010→            </CardHeader>
+  1011→            <CardContent className="pt-0">
+  1012→              <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+  1013→                {contractTypes.map(([type, count]) => (
+  1014→                  <div
+  1015→                    key={type}
+  1016→                    className="p-3 rounded-lg bg-[rgba(22,27,37,0.5)] border border-[rgba(255,255,255,0.04)] text-center"
+  1017→                  >
+  1018→                    <div className="text-lg font-bold text-[#e8ecf1] tabular-nums">
+  1019→                      {count}
+  1020→                    </div>
+  1021→                    <div className="text-[10px] text-[#8b95a5] mt-0.5">{type}</div>
+  1022→                  </div>
+  1023→                ))}
+  1024→              </div>
+  1025→            </CardContent>
+  1026→          </Card>
+  1027→        </motion.div>
+  1028→      </div>
+  1029→
+  1030→      {/* Deployment Map Matrix */}
+  1031→      <motion.div variants={itemVariants}>
+  1032→        <Card className="glass-card">
+  1033→          <CardHeader className="pb-3">
+  1034→            <CardTitle className="text-sm font-semibold text-[#e8ecf1]">
+  1035→              Deployment Map
+  1036→            </CardTitle>
+  1037→          </CardHeader>
+  1038→          <CardContent className="pt-0">
+  1039→            <ScrollArea className="max-h-[360px]">
+  1040→              <div className="min-w-[700px]">
+  1041→                {/* Header row */}
+  1042→                <div className="flex items-center gap-0 mb-1">
+  1043→                  <div className="w-[180px] flex-shrink-0 text-[10px] uppercase tracking-wider text-[#4a5568] pr-2">
+  1044→                    Contract
+  1045→                  </div>
+  1046→                  <div className="flex gap-0 flex-1 overflow-x-auto">
+  1047→                    {chainList.map((chain) => (
+  1048→                      <div
+  1049→                        key={chain}
+  1050→                        className="flex-1 min-w-[60px] text-[10px] uppercase tracking-wider text-[#4a5568] text-center truncate px-1"
+  1051→                      >
+  1052→                        {chain}
+  1053→                      </div>
+  1054→                    ))}
+  1055→                  </div>
+  1056→                </div>
+  1057→                {/* Rows */}
+  1058→                <div className="space-y-0.5">
+  1059→                  {CONTRACTS.map((c) => (
+  1060→                    <div
+  1061→                      key={c.name}
+  1062→                      className="flex items-center gap-0 py-1 border-t border-[rgba(255,255,255,0.03)]"
+  1063→                    >
+  1064→                      <div className="w-[180px] flex-shrink-0 text-[11px] font-mono text-[#e8ecf1] pr-2 truncate">
+  1065→                        {c.name}
+  1066→                      </div>
+  1067→                      <div className="flex gap-0 flex-1">
+  1068→                        {chainList.map((chain) => {
+  1069→                          const isDeployed = c.chain === chain && c.status === "deployed";
+  1070→                          const isOther = c.chain === chain && c.status !== "deployed";
+  1071→                          return (
+  1072→                            <div
+  1073→                              key={chain}
+  1074→                              className="flex-1 min-w-[60px] flex items-center justify-center"
+  1075→                            >
+  1076→                              {isDeployed && (
+  1077→                                <Check className="h-3.5 w-3.5 text-[#00D4AA]" />
+  1078→                              )}
+  1079→                              {isOther && (
+  1080→                                <Zap className="h-3 w-3 text-[#FFD93D]" />
+  1081→                              )}
+  1082→                            </div>
+  1083→                          );
+  1084→                        })}
+  1085→                      </div>
+  1086→                    </div>
+  1087→                  ))}
+  1088→                </div>
+  1089→              </div>
+  1090→            </ScrollArea>
+  1091→          </CardContent>
+  1092→        </Card>
+  1093→      </motion.div>
+  1094→    </motion.div>
+  1095→  );
+  1096→}
+  1097→
+  1098→// ═══════════════════════════════════════════════════════════════════
+  1099→// 4. BEO PAGE
+  1100→// ═══════════════════════════════════════════════════════════════════
+  1101→export function BeoPage() {
+  1102→  const riskColor = (risk: string) => {
+  1103→    switch (risk) {
+  1104→      case "LOW":
+  1105→        return { bg: "rgba(0,212,170,0.12)", color: "#00D4AA" };
+  1106→      case "MEDIUM":
+  1107→        return { bg: "rgba(255,217,61,0.12)", color: "#FFD93D" };
+  1108→      case "HIGH":
+  1109→        return { bg: "rgba(255,107,107,0.12)", color: "#FF6B6B" };
+  1110→      case "CRITICAL":
+  1111→        return { bg: "rgba(255,82,82,0.15)", color: "#FF5252" };
+  1112→      default:
+  1113→        return { bg: "rgba(107,114,128,0.15)", color: "#8b95a5" };
+  1114→    }
+  1115→  };
+  1116→
+  1117→  const sparkColor = (risk: string) => {
+  1118→    switch (risk) {
+  1119→      case "LOW":
+  1120→        return "#00D4AA";
+  1121→      case "MEDIUM":
+  1122→        return "#FFD93D";
+  1123→      case "HIGH":
+  1124→        return "#FF6B6B";
+  1125→      case "CRITICAL":
+  1126→        return "#FF5252";
+  1127→      default:
+  1128→        return "#8b95a5";
+  1129→    }
+  1130→  };
+  1131→
+  1132→  // Archetype distribution pie data
+  1133→  const archetypeData = [
+  1134→    { name: "Organic Growth", value: 1, color: "#00D4AA" },
+  1135→    { name: "Whale Movement", value: 1, color: "#FFD93D" },
+  1136→    { name: "Yield Farmer", value: 1, color: "#FF8C42" },
+  1137→    { name: "Flash Exploit", value: 1, color: "#FF5252" },
+  1138→    { name: "Active Trader", value: 1, color: "#7B61FF" },
+  1139→  ];
+  1140→
+  1141→  // Cross-chain connections for entity map
+  1142→  const entityConnections = BEO_ENTITIES.map((e: BEOEntity) => ({
+  1143→    id: e.id,
+  1144→    address: e.address,
+  1145→    chains: e.chains,
+  1146→    risk: e.risk,
+  1147→    color: riskColor(e.risk).color,
+  1148→  }));
+  1149→
+  1150→  const allChains = [...new Set(BEO_ENTITIES.flatMap((e: BEOEntity) => e.chains))];
+  1151→
+  1152→  return (
+  1153→    <motion.div
+  1154→      className="space-y-6"
+  1155→      variants={containerVariants}
+  1156→      initial="hidden"
+  1157→      animate="visible"
+  1158→    >
+  1159→      {/* Header */}
+  1160→      <motion.div variants={itemVariants}>
+  1161→        <h2 className="text-2xl font-bold text-[#e8ecf1] flex items-center gap-3">
+  1162→          <Eye className="h-6 w-6 text-[#FF6B6B]" />
+  1163→          Behavioral Entity Oracle (BEO)
+  1164→        </h2>
+  1165→        <p className="text-sm text-[#8b95a5] mt-1">
+  1166→          Cross-chain entity profiling, behavioral analysis, and risk classification
+  1167→        </p>
+  1168→      </motion.div>
+  1169→
+  1170→      {/* 5 BEO Entity Cards */}
+  1171→      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+  1172→        {BEO_ENTITIES.map((entity: BEOEntity) => {
+  1173→          const rc = riskColor(entity.risk);
+  1174→          const sc = sparkColor(entity.risk);
+  1175→          return (
+  1176→            <motion.div key={entity.id} variants={itemVariants}>
+  1177→              <Card className="glass-card">
+  1178→                <CardContent className="p-4 space-y-3">
+  1179→                  {/* Top row */}
+  1180→                  <div className="flex items-center justify-between">
+  1181→                    <div className="flex items-center gap-2">
+  1182→                      <span className="text-xs font-mono text-[#7B61FF]">
+  1183→                        {entity.id}
+  1184→                      </span>
+  1185→                      <span className="text-xs font-mono text-[#8b95a5]">
+  1186→                        {entity.address}
+  1187→                      </span>
+  1188→                    </div>
+  1189→                    <Badge
+  1190→                      className="text-[10px] uppercase tracking-wider font-bold"
+  1191→                      style={{
+  1192→                        backgroundColor: rc.bg,
+  1193→                        color: rc.color,
+  1194→                        border: "none",
+  1195→                      }}
+  1196→                    >
+  1197→                      {entity.risk}
+  1198→                    </Badge>
+  1199→                  </div>
+  1200→
+  1201→                  {/* Chain badges */}
+  1202→                  <div className="flex flex-wrap gap-1.5">
+  1203→                    {entity.chains.map((chain) => {
+  1204→                      const chainData = CHAINS.find((c) => c.name === chain);
+  1205→                      const cColor = chainData?.color || "#8b95a5";
+  1206→                      return (
+  1207→                        <Badge
+  1208→                          key={chain}
+  1209→                          variant="outline"
+  1210→                          className="text-[10px]"
+  1211→                          style={{
+  1212→                            borderColor: `${cColor}40`,
+  1213→                            color: cColor,
+  1214→                          }}
+  1215→                        >
+  1216→                          {chain}
+  1217→                        </Badge>
+  1218→                      );
+  1219→                    })}
+  1220→                  </div>
+  1221→
+  1222→                  {/* Details grid */}
+  1223→                  <div className="grid grid-cols-3 gap-3 text-xs">
+  1224→                    <div>
+  1225→                      <div className="text-[#4a5568]">Archetype</div>
+  1226→                      <div className="text-[#e8ecf1] font-medium text-[11px]">
+  1227→                        {entity.archetype}
+  1228→                      </div>
+  1229→                    </div>
+  1230→                    <div>
+  1231→                      <div className="text-[#4a5568]">Transactions</div>
+  1232→                      <div className="text-[#e8ecf1] tabular-nums">
+  1233→                        {entity.totalTx.toLocaleString()}
+  1234→                      </div>
+  1235→                    </div>
+  1236→                    <div>
+  1237→                      <div className="text-[#4a5568]">First Seen</div>
+  1238→                      <div className="text-[#8b95a5] tabular-nums">
+  1239→                        {entity.firstSeen}
+  1240→                      </div>
+  1241→                    </div>
+  1242→                  </div>
+  1243→
+  1244→                  {/* Coherence score */}
+  1245→                  <div>
+  1246→                    <div className="flex items-center justify-between mb-1">
+  1247→                      <span className="text-[10px] text-[#4a5568]">
+  1248→                        Coherence Score
+  1249→                      </span>
+  1250→                      <span
+  1251→                        className="text-[11px] font-medium tabular-nums"
+  1252→                        style={{ color: sc }}
+  1253→                      >
+  1254→                        {(entity.coherence * 100).toFixed(1)}%
+  1255→                      </span>
+  1256→                    </div>
+  1257→                    <div className="h-1.5 rounded-full bg-[rgba(255,255,255,0.06)]">
+  1258→                      <div
+  1259→                        className="h-full rounded-full progress-bar"
+  1260→                        style={{
+  1261→                          width: `${entity.coherence * 100}%`,
+  1262→                          backgroundColor: sc,
+  1263→                        }}
+  1264→                      />
+  1265→                    </div>
+  1266→                  </div>
+  1267→
+  1268→                  {/* Sparkline */}
+  1269→                  <div className="flex items-center justify-between">
+  1270→                    <span className="text-[10px] text-[#4a5568]">
+  1271→                      BH History
+  1272→                    </span>
+  1273→                    <MiniSparkline data={entity.bhHistory} color={sc} width={140} height={28} />
+  1274→                  </div>
+  1275→                </CardContent>
+  1276→              </Card>
+  1277→            </motion.div>
+  1278→          );
+  1279→        })}
+  1280→      </div>
+  1281→
+  1282→      {/* Archetype Distribution Pie */}
+  1283→      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  1284→        <motion.div variants={itemVariants}>
+  1285→          <Card className="glass-card">
+  1286→            <CardHeader className="pb-2">
+  1287→              <CardTitle className="text-sm font-semibold text-[#e8ecf1]">
+  1288→                Behavioral Archetype Distribution
+  1289→              </CardTitle>
+  1290→            </CardHeader>
+  1291→            <CardContent className="pt-0">
+  1292→              <div className="h-[240px]">
+  1293→                <ResponsiveContainer width="100%" height="100%">
+  1294→                  <PieChart>
+  1295→                    <Pie
+  1296→                      data={archetypeData}
+  1297→                      cx="50%"
+  1298→                      cy="50%"
+  1299→                      innerRadius={50}
+  1300→                      outerRadius={85}
+  1301→                      paddingAngle={3}
+  1302→                      dataKey="value"
+  1303→                      stroke="none"
+  1304→                    >
+  1305→                      {archetypeData.map((entry, idx) => (
+  1306→                        <Cell key={idx} fill={entry.color} />
+  1307→                      ))}
+  1308→                    </Pie>
+  1309→                    <RechartsTooltip
+  1310→                      contentStyle={{
+  1311→                        backgroundColor: "#161b25",
+  1312→                        border: "1px solid rgba(255,255,255,0.08)",
+  1313→                        borderRadius: "8px",
+  1314→                        color: "#e8ecf1",
+  1315→                        fontSize: 12,
+  1316→                      }}
+  1317→                    />
+  1318→                  </PieChart>
+  1319→                </ResponsiveContainer>
+  1320→              </div>
+  1321→              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+  1322→                {archetypeData.map((a) => (
+  1323→                  <div key={a.name} className="flex items-center gap-1.5 text-[10px] text-[#8b95a5]">
+  1324→                    <span
+  1325→                      className="inline-block h-2 w-2 rounded-full"
+  1326→                      style={{ backgroundColor: a.color }}
+  1327→                    />
+  1328→                    {a.name}
+  1329→                  </div>
+  1330→                ))}
+  1331→              </div>
+  1332→            </CardContent>
+  1333→          </Card>
+  1334→        </motion.div>
+  1335→
+  1336→        {/* Cross-Chain Entity Map */}
+  1337→        <motion.div variants={itemVariants}>
+  1338→          <Card className="glass-card">
+  1339→            <CardHeader className="pb-2">
+  1340→              <CardTitle className="text-sm font-semibold text-[#e8ecf1]">
+  1341→                Cross-Chain Entity Map
+  1342→              </CardTitle>
+  1343→            </CardHeader>
+  1344→            <CardContent className="pt-0">
+  1345→              <div className="relative space-y-4 py-4">
+  1346→                {/* Entity nodes */}
+  1347→                {entityConnections.map((ec, idx) => (
+  1348→                  <div key={ec.id} className="flex items-center gap-3">
+  1349→                    {/* Entity dot + name */}
+  1350→                    <div className="flex items-center gap-2 min-w-[160px]">
+  1351→                      <span
+  1352→                        className="h-3 w-3 rounded-full flex-shrink-0"
+  1353→                        style={{ backgroundColor: ec.color }}
+  1354→                      />
+  1355→                      <div>
+  1356→                        <div className="text-[11px] font-mono text-[#e8ecf1]">
+  1357→                          {ec.id}
+  1358→                        </div>
+  1359→                        <div className="text-[9px] text-[#4a5568]">
+  1360→                          {ec.address}
+  1361→                        </div>
+  1362→                      </div>
+  1363→                    </div>
+  1364→                    {/* Connection lines */}
+  1365→                    <div className="flex items-center gap-1 flex-1 flex-wrap">
+  1366→                      <div
+  1367→                        className="h-[1px] w-4"
+  1368→                        style={{ backgroundColor: `${ec.color}40` }}
+  1369→                      />
+  1370→                      {ec.chains.map((chain) => {
+  1371→                        const cd = CHAINS.find((c) => c.name === chain);
+  1372→                        const cc = cd?.color || "#8b95a5";
+  1373→                        return (
+  1374→                          <div key={chain} className="flex items-center gap-1">
+  1375→                            <Link2 className="h-3 w-3" style={{ color: cc }} />
+  1376→                            <span
+  1377→                              className="text-[9px] px-1.5 py-0.5 rounded"
+  1378→                              style={{
+  1379→                                backgroundColor: `${cc}18`,
+  1380→                                color: cc,
+  1381→                              }}
+  1382→                            >
+  1383→                              {chain}
+  1384→                            </span>
+  1385→                          </div>
+  1386→                        );
+  1387→                      })}
+  1388→                    </div>
+  1389→                  </div>
+  1390→                ))}
+  1391→              </div>
+  1392→            </CardContent>
+  1393→          </Card>
+  1394→        </motion.div>
+  1395→      </div>
+  1396→
+  1397→      {/* Entity Search */}
+  1398→      <motion.div variants={itemVariants}>
+  1399→        <Card className="glass-card">
+  1400→          <CardHeader className="pb-3">
+  1401→            <CardTitle className="text-sm font-semibold text-[#e8ecf1]">
+  1402→              Entity Search
+  1403→            </CardTitle>
+  1404→          </CardHeader>
+  1405→          <CardContent className="pt-0 space-y-4">
+  1406→            <div className="relative">
+  1407→              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#4a5568]" />
+  1408→              <Input
+  1409→                placeholder="Search by address, entity ID, or archetype..."
+  1410→                className="pl-9 bg-[rgba(22,27,37,0.6)] border-[rgba(255,255,255,0.08)] text-[#e8ecf1] placeholder:text-[#4a5568] text-xs h-9"
+  1411→              />
+  1412→            </div>
+  1413→            <ScrollArea className="max-h-[240px]">
+  1414→              <div className="space-y-2 pr-2">
+  1415→                {BEO_ENTITIES.map((entity: BEOEntity) => {
+  1416→                  const rc = riskColor(entity.risk);
+  1417→                  return (
+  1418→                    <div
+  1419→                      key={entity.id}
+  1420→                      className="flex items-center justify-between p-3 rounded-lg bg-[rgba(22,27,37,0.4)] border border-[rgba(255,255,255,0.04)] hover:border-[rgba(255,255,255,0.1)] transition-colors cursor-pointer"
+  1421→                    >
+  1422→                      <div className="flex items-center gap-3">
+  1423→                        <Circle
+  1424→                          className="h-3 w-3 fill-current"
+  1425→                          style={{ color: rc.color }}
+  1426→                        />
+  1427→                        <div>
+  1428→                          <div className="text-xs font-mono text-[#e8ecf1]">
+  1429→                            {entity.id}{" "}
+  1430→                            <span className="text-[#4a5568]">
+  1431→                              {entity.address}
+  1432→                            </span>
+  1433→                          </div>
+  1434→                          <div className="text-[10px] text-[#8b95a5]">
+  1435→                            {entity.archetype} &middot; {entity.totalTx} txs
+  1436→                          </div>
+  1437→                        </div>
+  1438→                      </div>
+  1439→                      <div className="flex items-center gap-2">
+  1440→                        <MiniSparkline
+  1441→                          data={entity.bhHistory}
+  1442→                          color={sparkColor(entity.risk)}
+  1443→                          width={80}
+  1444→                          height={24}
+  1445→                        />
+  1446→                        <Badge
+  1447→                          className="text-[9px] uppercase tracking-wider font-bold"
+  1448→                          style={{
+  1449→                            backgroundColor: rc.bg,
+  1450→                            color: rc.color,
+  1451→                            border: "none",
+  1452→                          }}
+  1453→                        >
+  1454→                          {entity.risk}
+  1455→                        </Badge>
+  1456→                      </div>
+  1457→                    </div>
+  1458→                  );
+  1459→                })}
+  1460→              </div>
+  1461→            </ScrollArea>
+  1462→          </CardContent>
+  1463→        </Card>
+  1464→      </motion.div>
+  1465→    </motion.div>
+  1466→  );
+  1467→}

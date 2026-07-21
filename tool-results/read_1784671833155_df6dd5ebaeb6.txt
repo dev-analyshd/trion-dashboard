@@ -1,0 +1,848 @@
+     1→"use client";
+     2→
+     3→import React from "react";
+     4→import { motion } from "framer-motion";
+     5→import {
+     6→  AreaChart, Area, RadarChart, Radar, PolarGrid,
+     7→  PolarAngleAxis, PolarRadiusAxis, LineChart, Line,
+     8→  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+     9→} from "recharts";
+    10→import { Badge } from "@/components/ui/badge";
+    11→import { ScrollArea } from "@/components/ui/scroll-area";
+    12→import {
+    13→  PLANE_STATUSES, LIVING_SECURITY, CRISPR_SIGNATURES, ANIMA_STREAMS,
+    14→  ARCHETYPES,
+    15→} from "@/lib/trion-data";
+    16→
+    17→// ─── Shared Animation Variants ──────────────────────────────────────
+    18→const containerVariants = {
+    19→  hidden: { opacity: 0 },
+    20→  visible: { opacity: 1, transition: { staggerChildren: 0.04, delayChildren: 0.05 } },
+    21→};
+    22→const itemVariants = {
+    23→  hidden: { opacity: 0, y: 18 },
+    24→  visible: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" } },
+    25→};
+    26→const fadeScale = {
+    27→  hidden: { opacity: 0, scale: 0.96 },
+    28→  visible: { opacity: 1, scale: 1, transition: { duration: 0.5, ease: "easeOut" } },
+    29→};
+    30→
+    31→const RISK_COLORS: Record<string, string> = { SAFE: "#00D4AA", CAUTION: "#FFD93D", DANGER: "#FF6B6B", CRITICAL: "#FF5252" };
+    32→const SEVERITY_COLORS: Record<string, string> = { critical: "#FF6B6B", high: "#FF8C42", medium: "#FFD93D" };
+    33→const WEIGHT_LABELS = ["α", "β", "γ", "δ", "ε"];
+    34→
+    35→// ─── Shared Chart Tooltip ───────────────────────────────────────────
+    36→function DarkTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ name: string; value: number; color: string }>; label?: string }) {
+    37→  if (!active || !payload?.length) return null;
+    38→  return (
+    39→    <div className="glass-card-elevated px-3 py-2 text-xs">
+    40→      <p className="text-[#8b95a5] mb-1">{label}</p>
+    41→      {payload.map((p, i) => (
+    42→        <p key={i} className="flex items-center gap-2">
+    43→          <span className="w-2 h-2 rounded-full" style={{ background: p.color }} />
+    44→          <span className="text-[#e8ecf1]">{p.name}: {typeof p.value === "number" ? p.value.toFixed(3) : p.value}</span>
+    45→        </p>
+    46→      ))}
+    47→    </div>
+    48→  );
+    49→}
+    50→
+    51→// ═══════════════════════════════════════════════════════════════════════
+    52→// 1. AKASHIC PAGE
+    53→// ═══════════════════════════════════════════════════════════════════════
+    54→
+    55→const AKASHIC_METRICS = [
+    56→  { label: "Total Vectors", value: "2,418,923", sub: "128-dim embeddings", color: "#00D4AA", icon: "⬡" },
+    57→  { label: "Entity Records", value: "142,307", sub: "Unique BEO entities", color: "#7B61FF", icon: "◉" },
+    58→  { label: "Archetypes", value: "64", sub: "Behavioral clusters", color: "#FFD93D", icon: "✦" },
+    59→  { label: "Akashic Depth", value: "D≥10K", sub: "Min 10K tx per entity", color: "#FF8C42", icon: "▼" },
+    60→  { label: "BH Ledger", value: "4.8M", sub: "Behavioral history records", color: "#FF6B6B", icon: "◎" },
+    61→  { label: "0G Storage", value: "892 syncs", sub: "DA blob syncs active", color: "#00D4AA", icon: "⬢" },
+    62→  { label: "DA Blobs", value: "12,847", sub: "Data availability blobs", color: "#7B61FF", icon: "◆" },
+    63→  { label: "KV Streams", value: "4 active", sub: "0G key-value streams", color: "#FFD93D", icon: "⇌" },
+    64→];
+    65→
+    66→function generateVectorGrid() {
+    67→  const archetypeColors = ARCHETYPES.map(a => a.color);
+    68→  const grid: { color: string; opacity: number }[] = [];
+    69→  for (let i = 0; i < 256; i++) {
+    70→    const arch = archetypeColors[i % archetypeColors.length];
+    71→    const opacity = 0.15 + Math.random() * 0.7;
+    72→    grid.push({ color: arch, opacity });
+    73→  }
+    74→  return grid;
+    75→}
+    76→
+    77→export function AkashicPage() {
+    78→  const vectorGrid = React.useMemo(() => generateVectorGrid(), []);
+    79→  const displayedArchetypes = ARCHETYPES.slice(0, 12);
+    80→  const riskCounts = { SAFE: 0, CAUTION: 0, DANGER: 0, CRITICAL: 0 };
+    81→  ARCHETYPES.forEach(a => { riskCounts[a.risk] += a.count; });
+    82→  const radarData = Object.entries(riskCounts).map(([risk, count]) => ({
+    83→    risk,
+    84→    count,
+    85→    fullMark: Math.max(...Object.values(riskCounts)),
+    86→  }));
+    87→
+    88→  return (
+    89→    <motion.div className="space-y-6" variants={containerVariants} initial="hidden" animate="visible">
+    90→      {/* ── Metric Cards ── */}
+    91→      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+    92→        {AKASHIC_METRICS.map((m, i) => (
+    93→          <motion.div key={m.label} variants={itemVariants}>
+    94→            <div className="glass-card p-4 flex items-start gap-3">
+    95→              <div className="w-10 h-10 rounded-full flex items-center justify-center text-lg shrink-0"
+    96→                style={{ background: `${m.color}18`, color: m.color }}>
+    97→                {m.icon}
+    98→              </div>
+    99→              <div className="min-w-0">
+   100→                <p className="text-[#8b95a5] text-xs font-medium uppercase tracking-wider">{m.label}</p>
+   101→                <p className="text-[#e8ecf1] text-xl font-bold mt-0.5">{m.value}</p>
+   102→                <p className="text-[#4a5568] text-xs mt-0.5">{m.sub}</p>
+   103→              </div>
+   104→            </div>
+   105→          </motion.div>
+   106→        ))}
+   107→      </div>
+   108→
+   109→      {/* ── 64 Behavioral Archetypes ── */}
+   110→      <motion.div variants={fadeScale}>
+   111→        <h2 className="text-[#e8ecf1] text-lg font-semibold mb-4 flex items-center gap-2">
+   112→          <span className="w-1 h-5 bg-[#00D4AA] rounded-full" />64 Behavioral Archetypes
+   113→        </h2>
+   114→        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+   115→          {displayedArchetypes.map((arch, i) => (
+   116→            <motion.div key={arch.id} variants={itemVariants}>
+   117→              <div className="glass-card p-4 flex gap-3 overflow-hidden relative">
+   118→                <div className="absolute left-0 top-0 bottom-0 w-1 rounded-l-xl" style={{ background: arch.color }} />
+   119→                <div className="pl-3 flex-1 min-w-0">
+   120→                  <div className="flex items-center justify-between gap-2 mb-1">
+   121→                    <span className="text-[#e8ecf1] text-sm font-semibold truncate">{arch.name}</span>
+   122→                    <Badge className="text-[10px] px-1.5 py-0 h-5 font-bold border-0"
+   123→                      style={{ background: `${RISK_COLORS[arch.risk]}20`, color: RISK_COLORS[arch.risk] }}>
+   124→                      {arch.risk}
+   125→                    </Badge>
+   126→                  </div>
+   127→                  <p className="text-[#4a5568] text-xs mb-2 line-clamp-1">{arch.description}</p>
+   128→                  <p className="text-[#8b95a5] text-xs font-mono">{arch.count.toLocaleString()} entities</p>
+   129→                </div>
+   130→              </div>
+   131→            </motion.div>
+   132→          ))}
+   133→        </div>
+   134→      </motion.div>
+   135→
+   136→      {/* ── Radar Chart + Vector Space ── */}
+   137→      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+   138→        <motion.div variants={fadeScale}>
+   139→          <div className="glass-card p-6">
+   140→            <h3 className="text-[#e8ecf1] text-sm font-semibold mb-4">Archetype Risk Distribution</h3>
+   141→            <ResponsiveContainer width="100%" height={280}>
+   142→              <RadarChart data={radarData} cx="50%" cy="50%" outerRadius="70%">
+   143→                <PolarGrid stroke="#1a1f2b" />
+   144→                <PolarAngleAxis dataKey="risk" tick={{ fill: "#8b95a5", fontSize: 11 }} />
+   145→                <PolarRadiusAxis tick={{ fill: "#4a5568", fontSize: 10 }} axisLine={false} />
+   146→                <Radar name="Entities" dataKey="count" stroke="#00D4AA" fill="#00D4AA" fillOpacity={0.2} strokeWidth={2} />
+   147→                <Tooltip content={<DarkTooltip />} />
+   148→              </RadarChart>
+   149→            </ResponsiveContainer>
+   150→          </div>
+   151→        </motion.div>
+   152→
+   153→        <motion.div variants={fadeScale}>
+   154→          <div className="glass-card p-6">
+   155→            <h3 className="text-[#e8ecf1] text-sm font-semibold mb-4">128-Dim Vector Space</h3>
+   156→            <div className="flex flex-wrap gap-[2px] justify-center">
+   157→              {vectorGrid.map((v, i) => (
+   158→                <motion.div
+   159→                  key={i}
+   160→                  initial={{ opacity: 0, scale: 0 }}
+   161→                  animate={{ opacity: v.opacity, scale: 1 }}
+   162→                  transition={{ delay: i * 0.003, duration: 0.2 }}
+   163→                  className="w-[13px] h-[13px] rounded-sm"
+   164→                  style={{ background: v.color, opacity: v.opacity }}
+   165→                />
+   166→              ))}
+   167→            </div>
+   168→            <p className="text-[#4a5568] text-[10px] text-center mt-3">16×16 cluster grid · color = nearest archetype · brightness = density</p>
+   169→          </div>
+   170→        </motion.div>
+   171→      </div>
+   172→    </motion.div>
+   173→  );
+   174→}
+   175→
+   176→// ═══════════════════════════════════════════════════════════════════════
+   177→// 2. PLANES PAGE
+   178→// ═══════════════════════════════════════════════════════════════════════
+   179→
+   180→function buildPlaneHistory() {
+   181→  const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+   182→  const planes = PLANE_STATUSES;
+   183→  return days.map((day, di) => {
+   184→    const entry: Record<string, string | number> = { day };
+   185→    planes.forEach((p, pi) => {
+   186→      const base = p.score;
+   187→      const noise = (Math.sin(di * 1.3 + pi * 2.1) * 0.04) + (Math.cos(di * 0.7 + pi) * 0.02);
+   188→      entry[p.name] = Math.min(1, Math.max(0, Math.round((base + noise) * 1000) / 1000));
+   189→    });
+   190→    return entry;
+   191→  });
+   192→}
+   193→
+   194→function buildShannonFeatures() {
+   195→  return PLANE_STATUSES[0].features.map((f) => ({
+   196→    name: f,
+   197→    value: 0.45 + Math.random() * 0.5,
+   198→  }));
+   199→}
+   200→
+   201→const CODE_LINES = [
+   202→  { text: "// TRION Master Equation — Whitepaper §11", cls: "text-[#4a5568]" },
+   203→  { text: "C(t) = ", cls: "text-[#e8ecf1]", after: [
+   204→    { text: "α", color: "#00D4AA" }, { text: "·", cls: "text-[#00D4AA]" },
+   205→    { text: "Φ_adj", color: "#00D4AA" }, { text: "(0.842) + ", cls: "text-[#e8ecf1]" },
+   206→    { text: "β", color: "#7B61FF" }, { text: "·", cls: "text-[#7B61FF]" },
+   207→    { text: "M_adj", color: "#7B61FF" }, { text: "(0.791) + ", cls: "text-[#e8ecf1]" },
+   208→    { text: "γ", color: "#FF6B6B" }, { text: "·", cls: "text-[#FF6B6B]" },
+   209→    { text: "Σ", color: "#FF6B6B" }, { text: "(0.724) + ", cls: "text-[#e8ecf1]" },
+   210→    { text: "δ", color: "#FFD93D" }, { text: "·", cls: "text-[#FFD93D]" },
+   211→    { text: "K", color: "#FFD93D" }, { text: "(0.100) + ", cls: "text-[#e8ecf1]" },
+   212→    { text: "ε", color: "#FF8C42" }, { text: "·", cls: "text-[#FF8C42]" },
+   213→    { text: "A", color: "#FF8C42" }, { text: "(0.100)", cls: "text-[#e8ecf1]" },
+   214→  ]},
+   215→  { text: "C(t) = 0.25×0.842 + 0.30×0.791 + 0.25×0.724 + 0.10×0.100 + 0.10×0.100", cls: "text-[#e8ecf1]" },
+   216→  { text: "C(t) = 0.2105 + 0.2373 + 0.1810 + 0.0100 + 0.0100 = 0.6488", cls: "text-[#e8ecf1]" },
+   217→  { text: "", cls: "" },
+   218→  { text: "// Economic Moat (6-factor multiplicative)", cls: "text-[#4a5568]" },
+   219→  { text: "M_moat = D(t)×Q(t)×R(t)×X(t)×F(t)×N(t) = 0.847", cls: "text-[#e8ecf1]" },
+   220→  { text: "", cls: "" },
+   221→  { text: "// Final Output", cls: "text-[#4a5568]" },
+   222→  { text: "T(t) = [C(t) ≥ Θ(t)] · C(t) · e^M_moat = COHERENT · 0.649 · 1.847", cls: "text-[#e8ecf1]" },
+   223→];
+   224→
+   225→export function PlanesPage() {
+   226→  const planeHistory = buildPlaneHistory();
+   227→  const shannonFeatures = buildShannonFeatures();
+   228→
+   229→  return (
+   230→    <motion.div className="space-y-6" variants={containerVariants} initial="hidden" animate="visible">
+   231→      {/* ── 5 Plane Detail Cards ── */}
+   232→      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
+   233→        {PLANE_STATUSES.map((plane, i) => (
+   234→          <motion.div key={plane.name} variants={itemVariants}>
+   235→            <div className="glass-card p-5 h-full flex flex-col">
+   236→              <div className="flex items-center gap-3 mb-3">
+   237→                <div className="w-11 h-11 rounded-full flex items-center justify-center text-xl font-bold shrink-0"
+   238→                  style={{ background: `${plane.color}20`, color: plane.color, border: `1px solid ${plane.color}30` }}>
+   239→                  {plane.symbol}
+   240→                </div>
+   241→                <div className="min-w-0">
+   242→                  <h3 className="text-[#e8ecf1] text-sm font-bold">{plane.name}</h3>
+   243→                  <p className="text-[#4a5568] text-[10px]">{plane.description}</p>
+   244→                </div>
+   245→              </div>
+   246→
+   247→              <div className="flex items-center justify-between text-xs mb-2">
+   248→                <span className="text-[#8b95a5]">Weight <span style={{ color: plane.color }} className="font-mono font-bold">{WEIGHT_LABELS[i]} = {plane.weight}</span></span>
+   249→                <Badge className="text-[9px] px-1.5 py-0 h-5 font-bold border-0"
+   250→                  style={{ background: plane.status === "active" ? "#00D4AA20" : "#FFD93D20", color: plane.status === "active" ? "#00D4AA" : "#FFD93D" }}>
+   251→                  {plane.status.toUpperCase()}
+   252→                </Badge>
+   253→              </div>
+   254→
+   255→              <div className="mb-3">
+   256→                <div className="flex items-baseline gap-1 mb-1.5">
+   257→                  <span className="text-[#e8ecf1] text-2xl font-bold font-mono">{plane.score.toFixed(3)}</span>
+   258→                </div>
+   259→                <div className="w-full h-1.5 bg-[#0e1019] rounded-full overflow-hidden">
+   260→                  <motion.div
+   261→                    className="h-full rounded-full"
+   262→                    style={{ background: plane.color }}
+   263→                    initial={{ width: 0 }}
+   264→                    animate={{ width: `${plane.score * 100}%` }}
+   265→                    transition={{ duration: 0.8, delay: i * 0.1 }}
+   266→                  />
+   267→                </div>
+   268→              </div>
+   269→
+   270→              <div className="flex flex-wrap gap-1 mt-auto">
+   271→                {plane.features.slice(0, 4).map((f) => (
+   272→                  <span key={f} className="text-[10px] px-2 py-0.5 rounded-full font-medium"
+   273→                    style={{ background: `${plane.color}12`, color: `${plane.color}cc`, border: `1px solid ${plane.color}20` }}>
+   274→                    {f}
+   275→                  </span>
+   276→                ))}
+   277→              </div>
+   278→            </div>
+   279→          </motion.div>
+   280→        ))}
+   281→      </div>
+   282→
+   283→      {/* ── Master Equation ── */}
+   284→      <motion.div variants={fadeScale}>
+   285→        <div className="glass-card p-6">
+   286→          <h3 className="text-[#e8ecf1] text-sm font-semibold mb-4 flex items-center gap-2">
+   287→            <span className="text-[#00D4AA]">⟨</span> Master Equation Breakdown <span className="text-[#00D4AA]">⟩</span>
+   288→          </h3>
+   289→          <div className="bg-[#08090d] rounded-lg p-4 font-mono text-xs leading-6 overflow-x-auto border border-[rgba(255,255,255,0.04)]">
+   290→            {CODE_LINES.map((line, li) => (
+   291→              <div key={li}>
+   292→                {line.after ? (
+   293→                  <span>
+   294→                    <span className={line.cls}>{line.text}</span>
+   295→                    {line.after.map((seg, si) => (
+   296→                      <span key={si} style={seg.color ? { color: seg.color } : undefined} className={seg.cls}>
+   297→                        {seg.text}
+   298→                      </span>
+   299→                    ))}
+   300→                  </span>
+   301→                ) : (
+   302→                  <span className={line.cls}>{line.text}</span>
+   303→                )}
+   304→              </div>
+   305→            ))}
+   306→          </div>
+   307→        </div>
+   308→      </motion.div>
+   309→
+   310→      {/* ── Plane Score History ── */}
+   311→      <motion.div variants={fadeScale}>
+   312→        <div className="glass-card p-6">
+   313→          <h3 className="text-[#e8ecf1] text-sm font-semibold mb-4">Plane Score History (7d)</h3>
+   314→          <ResponsiveContainer width="100%" height={300}>
+   315→            <AreaChart data={planeHistory}>
+   316→              <defs>
+   317→                {PLANE_STATUSES.map((p) => (
+   318→                  <linearGradient key={p.name} id={`grad-${p.name}`} x1="0" y1="0" x2="0" y2="1">
+   319→                    <stop offset="5%" stopColor={p.color} stopOpacity={0.3} />
+   320→                    <stop offset="95%" stopColor={p.color} stopOpacity={0} />
+   321→                  </linearGradient>
+   322→                ))}
+   323→              </defs>
+   324→              <CartesianGrid strokeDasharray="3 3" stroke="#1a1f2b" />
+   325→              <XAxis dataKey="day" tick={{ fill: "#4a5568", fontSize: 11 }} axisLine={{ stroke: "#1a1f2b" }} />
+   326→              <YAxis domain={[0, 1]} tick={{ fill: "#4a5568", fontSize: 11 }} axisLine={{ stroke: "#1a1f2b" }} />
+   327→              <Tooltip content={<DarkTooltip />} />
+   328→              <Legend wrapperStyle={{ fontSize: 11, color: "#8b95a5" }} />
+   329→              {PLANE_STATUSES.map((p) => (
+   330→                <Area key={p.name} type="monotone" dataKey={p.name} stroke={p.color}
+   331→                  fill={`url(#grad-${p.name})`} strokeWidth={2} dot={false} />
+   332→              ))}
+   333→            </AreaChart>
+   334→          </ResponsiveContainer>
+   335→        </div>
+   336→      </motion.div>
+   337→
+   338→      {/* ── Shannon Entropy Features ── */}
+   339→      <motion.div variants={fadeScale}>
+   340→        <h2 className="text-[#e8ecf1] text-lg font-semibold mb-4 flex items-center gap-2">
+   341→          <span className="w-1 h-5 bg-[#00D4AA] rounded-full" /> Shannon Entropy Features
+   342→          <span className="text-[#4a5568] text-xs font-normal ml-2">— Physical Plane (Φ)</span>
+   343→        </h2>
+   344→        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+   345→          {shannonFeatures.map((f, i) => (
+   346→            <motion.div key={f.name} variants={itemVariants}>
+   347→              <div className="glass-card p-4">
+   348→                <div className="flex items-center justify-between mb-2">
+   349→                  <span className="text-[#e8ecf1] text-sm font-medium">{f.name}</span>
+   350→                  <span className="text-[#00D4AA] text-xs font-mono font-bold">{f.value.toFixed(3)}</span>
+   351→                </div>
+   352→                <div className="w-full h-1.5 bg-[#0e1019] rounded-full overflow-hidden">
+   353→                  <motion.div
+   354→                    className="h-full rounded-full bg-[#00D4AA]"
+   355→                    initial={{ width: 0 }}
+   356→                    animate={{ width: `${f.value * 100}%` }}
+   357→                    transition={{ duration: 0.6, delay: i * 0.05 }}
+   358→                  />
+   359→                </div>
+   360→              </div>
+   361→            </motion.div>
+   362→          ))}
+   363→        </div>
+   364→      </motion.div>
+   365→    </motion.div>
+   366→  );
+   367→}
+   368→
+   369→// ═══════════════════════════════════════════════════════════════════════
+   370→// 3. SECURITY PAGE
+   371→// ═══════════════════════════════════════════════════════════════════════
+   372→
+   373→const SECURITY_KPIS = [
+   374→  { label: "Living Security Score", value: "SEC(t) = 0.94", sub: "8-component composite", color: "#00D4AA", icon: "◆" },
+   375→  { label: "Genomic Key Evolution", value: "GK #482,191", sub: "SHA3-256 hash chain", color: "#7B61FF", icon: "⧫" },
+   376→  { label: "CRISPR Intercepts", value: "1,381 total", sub: "10 attack signatures", color: "#FF6B6B", icon: "✦" },
+   377→  { label: "PQC Layer", value: "ML-DSA-87", sub: "CRYSTALS-Dilithium", color: "#FFD93D", icon: "◈" },
+   378→];
+   379→
+   380→const SECURITY_EVENTS = Array.from({ length: 30 }, (_, i) => {
+   381→  const day = i + 1;
+   382→  return {
+   383→    day: `D${day}`,
+   384→    attacks: Math.floor(30 + Math.random() * 50 + (i > 20 ? 40 : 0) + (i > 25 ? 30 : 0)),
+   385→    falsePositives: Math.floor(2 + Math.random() * 8),
+   386→  };
+   387→});
+   388→
+   389→function scoreColor(score: number) {
+   390→  if (score > 0.9) return "#00D4AA";
+   391→  if (score > 0.8) return "#FFD93D";
+   392→  return "#FF6B6B";
+   393→}
+   394→
+   395→function ShieldIcon() {
+   396→  return (
+   397→    <div className="flex flex-col items-center">
+   398→      <div className="relative w-32 h-36">
+   399→        {/* Outer shield */}
+   400→        <div className="absolute inset-0 rounded-t-[50%] rounded-b-[30%] border-2 border-[#00D4AA40]" style={{ background: "linear-gradient(180deg, rgba(0,212,170,0.08) 0%, rgba(0,212,170,0.02) 100%)" }} />
+   401→        {/* Inner shield */}
+   402→        <div className="absolute inset-[6px] rounded-t-[48%] rounded-b-[28%] border border-[#00D4AA25]" style={{ background: "linear-gradient(180deg, rgba(0,212,170,0.05) 0%, transparent 100%)" }} />
+   403→        {/* Lock icon center */}
+   404→        <div className="absolute inset-0 flex items-center justify-center">
+   405→          <div className="flex flex-col items-center">
+   406→            <div className="w-8 h-6 border-2 border-[#00D4AA] rounded-t-full border-b-0 mb-[-2px]" />
+   407→            <div className="w-12 h-10 bg-[#00D4AA20] border-2 border-[#00D4AA] rounded-md flex items-center justify-center">
+   408→              <div className="w-2 h-3 bg-[#00D4AA] rounded-sm" />
+   409→            </div>
+   410→          </div>
+   411→        </div>
+   412→        {/* Corner accents */}
+   413→        <div className="absolute top-2 left-1/2 -translate-x-1/2 w-4 h-0.5 bg-[#00D4AA60] rounded" />
+   414→        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-6 h-0.5 bg-[#00D4AA30] rounded" />
+   415→        {/* Pulse rings */}
+   416→        <motion.div
+   417→          className="absolute inset-[-8px] rounded-t-[55%] rounded-b-[35%] border border-[#00D4AA15]"
+   418→          animate={{ scale: [1, 1.05, 1], opacity: [0.3, 0.6, 0.3] }}
+   419→          transition={{ duration: 3, repeat: Infinity }}
+   420→        />
+   421→      </div>
+   422→      <p className="text-[#00D4AA] text-xs font-bold mt-2 tracking-wider">POST-QUANTUM SECURE</p>
+   423→      <p className="text-[#4a5568] text-[10px]">ML-DSA-87 · CRYSTALS-Dilithium Level 5</p>
+   424→    </div>
+   425→  );
+   426→}
+   427→
+   428→export function SecurityPage() {
+   429→  const totalMatches = CRISPR_SIGNATURES.reduce((s, c) => s + c.matches, 0);
+   430→
+   431→  return (
+   432→    <motion.div className="space-y-6" variants={containerVariants} initial="hidden" animate="visible">
+   433→      {/* ── KPI Cards ── */}
+   434→      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+   435→        {SECURITY_KPIS.map((kpi, i) => (
+   436→          <motion.div key={kpi.label} variants={itemVariants}>
+   437→            <div className="glass-card p-4 flex items-start gap-3">
+   438→              <div className="w-10 h-10 rounded-full flex items-center justify-center text-lg shrink-0"
+   439→                style={{ background: `${kpi.color}18`, color: kpi.color }}>
+   440→                {kpi.icon}
+   441→              </div>
+   442→              <div className="min-w-0">
+   443→                <p className="text-[#8b95a5] text-xs font-medium uppercase tracking-wider">{kpi.label}</p>
+   444→                <p className="text-[#e8ecf1] text-lg font-bold font-mono mt-0.5">{kpi.value}</p>
+   445→                <p className="text-[#4a5568] text-xs mt-0.5">{kpi.sub}</p>
+   446→              </div>
+   447→            </div>
+   448→          </motion.div>
+   449→        ))}
+   450→      </div>
+   451→
+   452→      {/* ── 8-Component Living Security ── */}
+   453→      <motion.div variants={fadeScale}>
+   454→        <h2 className="text-[#e8ecf1] text-lg font-semibold mb-4 flex items-center gap-2">
+   455→          <span className="w-1 h-5 bg-[#00D4AA] rounded-full" />8-Component Living Security
+   456→        </h2>
+   457→        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+   458→          {LIVING_SECURITY.map((comp, i) => {
+   459→            const sc = scoreColor(comp.score);
+   460→            return (
+   461→              <motion.div key={comp.name} variants={itemVariants}>
+   462→                <div className="glass-card p-4">
+   463→                  <div className="flex items-center gap-2.5 mb-2">
+   464→                    <div className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0"
+   465→                      style={{ background: `${sc}18`, color: sc, border: `1px solid ${sc}30` }}>
+   466→                      {comp.icon.slice(0, 2)}
+   467→                    </div>
+   468→                    <div className="min-w-0 flex-1">
+   469→                      <p className="text-[#e8ecf1] text-xs font-semibold truncate">{comp.name}</p>
+   470→                      <div className="flex items-center gap-1.5">
+   471→                        <Badge className="text-[9px] px-1 py-0 h-4 font-bold border-0"
+   472→                          style={{ background: comp.status === "active" ? "#00D4AA20" : "#FFD93D20", color: comp.status === "active" ? "#00D4AA" : "#FFD93D" }}>
+   473→                          {comp.status.toUpperCase()}
+   474→                        </Badge>
+   475→                        <span className="text-xs font-mono font-bold" style={{ color: sc }}>{comp.score.toFixed(2)}</span>
+   476→                      </div>
+   477→                    </div>
+   478→                  </div>
+   479→                  <p className="text-[#4a5568] text-[10px] mb-2">{comp.description}</p>
+   480→                  <div className="w-full h-1 bg-[#0e1019] rounded-full overflow-hidden">
+   481→                    <motion.div
+   482→                      className="h-full rounded-full"
+   483→                      style={{ background: sc }}
+   484→                      initial={{ width: 0 }}
+   485→                      animate={{ width: `${comp.score * 100}%` }}
+   486→                      transition={{ duration: 0.7, delay: i * 0.06 }}
+   487→                    />
+   488→                  </div>
+   489→                </div>
+   490→              </motion.div>
+   491→            );
+   492→          })}
+   493→        </div>
+   494→      </motion.div>
+   495→
+   496→      {/* ── CRISPR + Chart ── */}
+   497→      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+   498→        {/* CRISPR Signatures */}
+   499→        <motion.div variants={fadeScale}>
+   500→          <div className="glass-card p-6">
+   501→            <h3 className="text-[#e8ecf1] text-sm font-semibold mb-4 flex items-center justify-between">
+   502→              <span>CRISPR Attack Signatures</span>
+   503→              <span className="text-[#4a5568] text-xs font-normal">{totalMatches} matches</span>
+   504→            </h3>
+   505→            <ScrollArea className="h-[380px] pr-2">
+   506→              <div className="space-y-2">
+   507→                {CRISPR_SIGNATURES.map((sig) => {
+   508→                  const isCritical = sig.severity === "critical";
+   509→                  return (
+   510→                    <div
+   511→                      key={sig.name}
+   512→                      className="p-3 rounded-lg border transition-colors"
+   513→                      style={{
+   514→                        background: isCritical ? "rgba(255,107,107,0.04)" : "transparent",
+   515→                        borderColor: isCritical ? "rgba(255,107,107,0.15)" : "rgba(255,255,255,0.04)",
+   516→                        borderLeftWidth: 3,
+   517→                        borderLeftColor: SEVERITY_COLORS[sig.severity],
+   518→                      }}
+   519→                    >
+   520→                      <div className="flex items-center justify-between mb-1">
+   521→                        <span className="text-[#e8ecf1] text-xs font-mono font-semibold">{sig.name}</span>
+   522→                        <Badge className="text-[9px] px-1.5 py-0 h-4 font-bold border-0"
+   523→                          style={{ background: `${SEVERITY_COLORS[sig.severity]}20`, color: SEVERITY_COLORS[sig.severity] }}>
+   524→                          {sig.severity.toUpperCase()}
+   525→                        </Badge>
+   526→                      </div>
+   527→                      <p className="text-[#4a5568] text-[10px] mb-1.5">{sig.description}</p>
+   528→                      <div className="flex items-center justify-between">
+   529→                        <span className="text-[#8b95a5] text-[10px] font-mono">{sig.matches} matches</span>
+   530→                        <span className="text-[#4a5568] text-[10px]">{sig.lastTriggered}</span>
+   531→                      </div>
+   532→                    </div>
+   533→                  );
+   534→                })}
+   535→              </div>
+   536→            </ScrollArea>
+   537→          </div>
+   538→        </motion.div>
+   539→
+   540→        {/* Security Events Chart */}
+   541→        <motion.div variants={fadeScale}>
+   542→          <div className="glass-card p-6">
+   543→            <h3 className="text-[#e8ecf1] text-sm font-semibold mb-4">Security Events (30d)</h3>
+   544→            <ResponsiveContainer width="100%" height={340}>
+   545→              <LineChart data={SECURITY_EVENTS}>
+   546→                <CartesianGrid strokeDasharray="3 3" stroke="#1a1f2b" />
+   547→                <XAxis dataKey="day" tick={{ fill: "#4a5568", fontSize: 10 }} axisLine={{ stroke: "#1a1f2b" }} interval={4} />
+   548→                <YAxis tick={{ fill: "#4a5568", fontSize: 10 }} axisLine={{ stroke: "#1a1f2b" }} />
+   549→                <Tooltip content={<DarkTooltip />} />
+   550→                <Legend wrapperStyle={{ fontSize: 11 }} />
+   551→                <Line type="monotone" dataKey="attacks" name="Attacks Intercepted" stroke="#FF6B6B" strokeWidth={2} dot={false} />
+   552→                <Line type="monotone" dataKey="falsePositives" name="False Positives" stroke="#FFD93D" strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
+   553→              </LineChart>
+   554→            </ResponsiveContainer>
+   555→          </div>
+   556→        </motion.div>
+   557→      </div>
+   558→
+   559→      {/* ── Post-Quantum Cryptography ── */}
+   560→      <motion.div variants={fadeScale}>
+   561→        <div className="glass-card p-6">
+   562→          <h3 className="text-[#e8ecf1] text-sm font-semibold mb-6 flex items-center gap-2">
+   563→            <span className="w-1 h-5 bg-[#FFD93D] rounded-full" /> Post-Quantum Cryptography
+   564→          </h3>
+   565→          <div className="flex flex-col md:flex-row items-center justify-center gap-10">
+   566→            <ShieldIcon />
+   567→            <div className="space-y-3 flex-1 max-w-md">
+   568→              {[
+   569→                { label: "Algorithm", value: "ML-DSA-87 (CRYSTALS-Dilithium)", color: "#00D4AA" },
+   570→                { label: "Security Level", value: "NIST Level 5 (Highest)", color: "#FFD93D" },
+   571→                { label: "Key Size", value: "2,592 bytes (public) / 4,896 bytes (secret)", color: "#7B61FF" },
+   572→                { label: "Signature Size", value: "3,309 bytes", color: "#FF8C42" },
+   573→                { label: "Quantum Resistance", value: "Proven against Shor's & Grover's algorithms", color: "#00D4AA" },
+   574→                { label: "Implementation", value: "Production · All oracle contracts", color: "#e8ecf1" },
+   575→              ].map((item, i) => (
+   576→                <div key={item.label} className="flex items-start gap-3">
+   577→                  <span className="text-[#8b95a5] text-xs w-36 shrink-0 pt-0.5">{item.label}</span>
+   578→                  <span className="text-xs font-medium" style={{ color: item.color }}>{item.value}</span>
+   579→                </div>
+   580→              ))}
+   581→            </div>
+   582→          </div>
+   583→        </div>
+   584→      </motion.div>
+   585→    </motion.div>
+   586→  );
+   587→}
+   588→
+   589→// ═══════════════════════════════════════════════════════════════════════
+   590→// 4. ANIMA PAGE
+   591→// ═══════════════════════════════════════════════════════════════════════
+   592→
+   593→const LANGUAGES = [
+   594→  { code: "EN", name: "English", acc: 97.2 }, { code: "ZH", name: "Chinese", acc: 94.1 },
+   595→  { code: "JA", name: "Japanese", acc: 93.8 }, { code: "KO", name: "Korean", acc: 92.5 },
+   596→  { code: "AR", name: "Arabic", acc: 91.3 }, { code: "HI", name: "Hindi", acc: 90.8 },
+   597→  { code: "ES", name: "Spanish", acc: 96.1 }, { code: "FR", name: "French", acc: 95.7 },
+   598→  { code: "DE", name: "German", acc: 95.2 }, { code: "RU", name: "Russian", acc: 93.4 },
+   599→  { code: "PT", name: "Portuguese", acc: 94.8 }, { code: "IT", name: "Italian", acc: 95.0 },
+   600→  { code: "TR", name: "Turkish", acc: 89.2 }, { code: "VI", name: "Vietnamese", acc: 88.7 },
+   601→  { code: "TH", name: "Thai", acc: 87.1 }, { code: "ID", name: "Indonesian", acc: 91.0 },
+   602→  { code: "MS", name: "Malay", acc: 89.5 }, { code: "PL", name: "Polish", acc: 90.3 },
+   603→  { code: "NL", name: "Dutch", acc: 94.2 }, { code: "SV", name: "Swedish", acc: 93.9 },
+   604→  { code: "DA", name: "Danish", acc: 93.1 }, { code: "FI", name: "Finnish", acc: 92.8 },
+   605→  { code: "NO", name: "Norwegian", acc: 93.6 }, { code: "UK", name: "Ukrainian", acc: 89.8 },
+   606→  { code: "CS", name: "Czech", acc: 90.1 }, { code: "RO", name: "Romanian", acc: 88.9 },
+   607→  { code: "EL", name: "Greek", acc: 87.4 }, { code: "HE", name: "Hebrew", acc: 86.2 },
+   608→  { code: "BN", name: "Bengali", acc: 85.7 }, { code: "TA", name: "Tamil", acc: 84.3 },
+   609→  { code: "TL", name: "Tagalog", acc: 86.8 }, { code: "HU", name: "Hungarian", acc: 89.4 },
+   610→  { code: "FA", name: "Persian", acc: 87.9 }, { code: "SW", name: "Swahili", acc: 82.1 },
+   611→  { code: "UR", name: "Urdu", acc: 85.3 }, { code: "TE", name: "Telugu", acc: 83.7 },
+   612→  { code: "ML", name: "Malayalam", acc: 84.1 }, { code: "KN", name: "Kannada", acc: 82.8 },
+   613→  { code: "MR", name: "Marathi", acc: 83.4 }, { code: "GU", name: "Gujarati", acc: 82.5 },
+   614→  { code: "PA", name: "Punjabi", acc: 81.9 }, { code: "OR", name: "Odia", acc: 80.2 },
+   615→  { code: "MY", name: "Myanmar", acc: 78.4 }, { code: "KM", name: "Khmer", acc: 77.8 },
+   616→  { code: "LO", name: "Lao", acc: 76.3 }, { code: "SI", name: "Sinhala", acc: 79.1 },
+   617→  { code: "NE", name: "Nepali", acc: 80.7 }, { code: "PS", name: "Pashto", acc: 78.9 },
+   618→  { code: "AZ", name: "Azerbaijani", acc: 82.3 }, { code: "UZ", name: "Uzbek", acc: 79.6 },
+   619→  { code: "KA", name: "Georgian", acc: 80.1 }, { code: "HY", name: "Armenian", acc: 79.8 },
+   620→  { code: "EU", name: "Basque", acc: 81.5 }, { code: "CA", name: "Catalan", acc: 92.1 },
+   621→  { code: "HR", name: "Croatian", acc: 90.6 }, { code: "SR", name: "Serbian", acc: 89.7 },
+   622→  { code: "BG", name: "Bulgarian", acc: 88.3 }, { code: "SK", name: "Slovak", acc: 90.0 },
+   623→  { code: "SL", name: "Slovenian", acc: 89.1 }, { code: "LT", name: "Lithuanian", acc: 88.5 },
+   624→  { code: "LV", name: "Latvian", acc: 87.6 }, { code: "ET", name: "Estonian", acc: 88.0 },
+   625→  { code: "IW", name: "Hebrew (ALT)", acc: 86.2 }, { code: "AF", name: "Afrikaans", acc: 84.7 },
+   626→];
+   627→
+   628→function langColor(acc: number) {
+   629→  if (acc >= 94) return "#00D4AA";
+   630→  if (acc >= 88) return "#7B61FF";
+   631→  if (acc >= 82) return "#FFD93D";
+   632→  return "#FF8C42";
+   633→}
+   634→
+   635→const PATTERNS = [
+   636→  { name: "Pump & Dump", count: 2847, severity: "high" },
+   637→  { name: "Rug Pull", count: 891, severity: "critical" },
+   638→  { name: "Flash Loan Attack", count: 234, severity: "critical" },
+   639→  { name: "Wash Trading", count: 5623, severity: "medium" },
+   640→  { name: "Front-Running", count: 12847, severity: "medium" },
+   641→  { name: "Governance Attack", count: 56, severity: "critical" },
+   642→  { name: "Oracle Manipulation", count: 123, severity: "high" },
+   643→  { name: "Bridge Exploit", count: 18, severity: "critical" },
+   644→  { name: "Honeypot Detection", count: 423, severity: "high" },
+   645→  { name: "Phishing Pattern", count: 8921, severity: "high" },
+   646→];
+   647→
+   648→const CROSS_LANG_RADAR = [
+   649→  { family: "Germanic", score: 0.89 },
+   650→  { family: "Romance", score: 0.87 },
+   651→  { family: "Slavic", score: 0.82 },
+   652→  { family: "Sino-Tibetan", score: 0.78 },
+   653→  { family: "Japonic", score: 0.76 },
+   654→  { family: "Koreanic", score: 0.74 },
+   655→  { family: "Dravidian", score: 0.71 },
+   656→  { family: "Arabic", score: 0.69 },
+   657→];
+   658→
+   659→const SENTIMENT_DATA = Array.from({ length: 24 }, (_, i) => {
+   660→  const hour = `${i.toString().padStart(2, "0")}:00`;
+   661→  return {
+   662→    hour,
+   663→    Ethereum: 0.3 + Math.sin(i / 4) * 0.3 + Math.random() * 0.1,
+   664→    Solana: 0.25 + Math.sin(i / 3.5 + 1) * 0.25 + Math.random() * 0.1,
+   665→    Arbitrum: 0.2 + Math.sin(i / 5 + 2) * 0.2 + Math.random() * 0.08,
+   666→  };
+   667→});
+   668→
+   669→export function AnimaPage() {
+   670→  return (
+   671→    <motion.div className="space-y-6" variants={containerVariants} initial="hidden" animate="visible">
+   672→      {/* ── ANIMA Stream Cards ── */}
+   673→      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+   674→        {ANIMA_STREAMS.map((stream, i) => {
+   675→          const isActive = stream.status === "active";
+   676→          const dotColor = isActive ? "#00D4AA" : "#FFD93D";
+   677→          return (
+   678→            <motion.div key={stream.id} variants={itemVariants}>
+   679→              <div className="glass-card p-5 relative overflow-hidden">
+   680→                {/* Pulsing dot */}
+   681→                <div className="absolute top-4 right-4">
+   682→                  <span className="relative flex h-2.5 w-2.5">
+   683→                    <motion.span
+   684→                      className="absolute inline-flex h-full w-full rounded-full opacity-75"
+   685→                      style={{ background: dotColor }}
+   686→                      animate={{ scale: [1, 1.8], opacity: [0.6, 0] }}
+   687→                      transition={{ duration: 1.5, repeat: Infinity }}
+   688→                    />
+   689→                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full" style={{ background: dotColor }} />
+   690→                  </span>
+   691→                </div>
+   692→
+   693→                <h3 className="text-[#e8ecf1] text-sm font-bold mb-1 pr-6">{stream.name}</h3>
+   694→                <Badge className="text-[9px] px-1.5 py-0 h-4 font-bold border-0 mb-3"
+   695→                  style={{ background: isActive ? "#00D4AA20" : "#FFD93D20", color: isActive ? "#00D4AA" : "#FFD93D" }}>
+   696→                  {stream.status.toUpperCase()}
+   697→                </Badge>
+   698→
+   699→                <div className="grid grid-cols-2 gap-2 mt-2">
+   700→                  {[
+   701→                    { label: "Languages", value: stream.languages },
+   702→                    { label: "Patterns", value: stream.patterns },
+   703→                    { label: "Accuracy", value: `${stream.accuracy}%` },
+   704→                    { label: "Latency", value: stream.latency },
+   705→                  ].map((stat) => (
+   706→                    <div key={stat.label}>
+   707→                      <p className="text-[#4a5568] text-[10px]">{stat.label}</p>
+   708→                      <p className="text-[#e8ecf1] text-xs font-mono font-bold">{stat.value}</p>
+   709→                    </div>
+   710→                  ))}
+   711→                </div>
+   712→              </div>
+   713→            </motion.div>
+   714→          );
+   715→        })}
+   716→      </div>
+   717→
+   718→      {/* ── 54-Language Coverage ── */}
+   719→      <motion.div variants={fadeScale}>
+   720→        <div className="glass-card p-6">
+   721→          <h3 className="text-[#e8ecf1] text-sm font-semibold mb-4 flex items-center gap-2">
+   722→            <span className="w-1 h-5 bg-[#7B61FF] rounded-full" />54-Language Coverage
+   723→          </h3>
+   724→          <div className="flex flex-wrap gap-1.5">
+   725→            {LANGUAGES.map((lang, i) => (
+   726→              <motion.span
+   727→                key={lang.code}
+   728→                initial={{ opacity: 0, scale: 0.8 }}
+   729→                animate={{ opacity: 1, scale: 1 }}
+   730→                transition={{ delay: i * 0.015, duration: 0.2 }}
+   731→                className="px-2.5 py-1 rounded-md text-[11px] font-mono font-semibold cursor-default transition-all hover:scale-105"
+   732→                style={{
+   733→                  background: `${langColor(lang.acc)}15`,
+   734→                  color: langColor(lang.acc),
+   735→                  border: `1px solid ${langColor(lang.acc)}25`,
+   736→                }}
+   737→                title={`${lang.name} — ${lang.acc}% accuracy`}
+   738→              >
+   739→                {lang.code}
+   740→              </motion.span>
+   741→            ))}
+   742→          </div>
+   743→          <div className="flex items-center gap-4 mt-3 text-[10px]">
+   744→            {[
+   745→              { color: "#00D4AA", label: "≥94%" },
+   746→              { color: "#7B61FF", label: "88-93%" },
+   747→              { color: "#FFD93D", label: "82-87%" },
+   748→              { color: "#FF8C42", label: "<82%" },
+   749→            ].map((l) => (
+   750→              <span key={l.label} className="flex items-center gap-1">
+   751→                <span className="w-2 h-2 rounded-sm" style={{ background: l.color }} />
+   752→                <span className="text-[#4a5568]">{l.label}</span>
+   753→              </span>
+   754→            ))}
+   755→          </div>
+   756→        </div>
+   757→      </motion.div>
+   758→
+   759→      {/* ── Pattern Detection + Radar ── */}
+   760→      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+   761→        {/* 30+ Pattern Detection */}
+   762→        <motion.div variants={fadeScale}>
+   763→          <div className="glass-card p-6">
+   764→            <h3 className="text-[#e8ecf1] text-sm font-semibold mb-4 flex items-center gap-2">
+   765→              <span className="w-1 h-5 bg-[#FF6B6B] rounded-full" />30+ Pattern Detection
+   766→            </h3>
+   767→            <ScrollArea className="h-[360px] pr-2">
+   768→              <div className="space-y-1.5">
+   769→                {PATTERNS.map((pat, i) => (
+   770→                  <motion.div
+   771→                    key={pat.name}
+   772→                    variants={itemVariants}
+   773→                    className="flex items-center justify-between p-2.5 rounded-lg hover:bg-[rgba(255,255,255,0.02)] transition-colors"
+   774→                  >
+   775→                    <div className="flex items-center gap-2.5 min-w-0">
+   776→                      <div className="w-6 h-6 rounded flex items-center justify-center text-[10px] font-bold shrink-0"
+   777→                        style={{ background: `${SEVERITY_COLORS[pat.severity]}18`, color: SEVERITY_COLORS[pat.severity] }}>
+   778→                        {i + 1}
+   779→                      </div>
+   780→                      <span className="text-[#e8ecf1] text-xs font-medium truncate">{pat.name}</span>
+   781→                    </div>
+   782→                    <div className="flex items-center gap-3 shrink-0">
+   783→                      <span className="text-[#8b95a5] text-xs font-mono">{pat.count.toLocaleString()}</span>
+   784→                      <Badge className="text-[9px] px-1.5 py-0 h-4 font-bold border-0 min-w-[52px] text-center"
+   785→                        style={{ background: `${SEVERITY_COLORS[pat.severity]}20`, color: SEVERITY_COLORS[pat.severity] }}>
+   786→                        {pat.severity.toUpperCase()}
+   787→                      </Badge>
+   788→                    </div>
+   789→                  </motion.div>
+   790→                ))}
+   791→              </div>
+   792→            </ScrollArea>
+   793→          </div>
+   794→        </motion.div>
+   795→
+   796→        {/* Cross-Language Agreement Radar */}
+   797→        <motion.div variants={fadeScale}>
+   798→          <div className="glass-card p-6">
+   799→            <h3 className="text-[#e8ecf1] text-sm font-semibold mb-4">Cross-Language Agreement</h3>
+   800→            <ResponsiveContainer width="100%" height={340}>
+   801→              <RadarChart data={CROSS_LANG_RADAR} cx="50%" cy="50%" outerRadius="65%">
+   802→                <PolarGrid stroke="#1a1f2b" />
+   803→                <PolarAngleAxis dataKey="family" tick={{ fill: "#8b95a5", fontSize: 10 }} />
+   804→                <PolarRadiusAxis domain={[0, 1]} tick={{ fill: "#4a5568", fontSize: 9 }} axisLine={false} />
+   805→                <Radar name="Agreement" dataKey="score" stroke="#7B61FF" fill="#7B61FF" fillOpacity={0.15} strokeWidth={2} />
+   806→                <Tooltip content={<DarkTooltip />} />
+   807→              </RadarChart>
+   808→            </ResponsiveContainer>
+   809→            <p className="text-[#4a5568] text-[10px] text-center mt-2">Agreement score (CA) across language families — target &gt; 0.65</p>
+   810→          </div>
+   811→        </motion.div>
+   812→      </div>
+   813→
+   814→      {/* ── Sentiment Flow ── */}
+   815→      <motion.div variants={fadeScale}>
+   816→        <div className="glass-card p-6">
+   817→          <h3 className="text-[#e8ecf1] text-sm font-semibold mb-4">Sentiment Flow (24h)</h3>
+   818→          <ResponsiveContainer width="100%" height={280}>
+   819→            <AreaChart data={SENTIMENT_DATA}>
+   820→              <defs>
+   821→                <linearGradient id="sent-eth" x1="0" y1="0" x2="0" y2="1">
+   822→                  <stop offset="5%" stopColor="#627EEA" stopOpacity={0.3} />
+   823→                  <stop offset="95%" stopColor="#627EEA" stopOpacity={0} />
+   824→                </linearGradient>
+   825→                <linearGradient id="sent-sol" x1="0" y1="0" x2="0" y2="1">
+   826→                  <stop offset="5%" stopColor="#9945FF" stopOpacity={0.25} />
+   827→                  <stop offset="95%" stopColor="#9945FF" stopOpacity={0} />
+   828→                </linearGradient>
+   829→                <linearGradient id="sent-arb" x1="0" y1="0" x2="0" y2="1">
+   830→                  <stop offset="5%" stopColor="#28A0F0" stopOpacity={0.2} />
+   831→                  <stop offset="95%" stopColor="#28A0F0" stopOpacity={0} />
+   832→                </linearGradient>
+   833→              </defs>
+   834→              <CartesianGrid strokeDasharray="3 3" stroke="#1a1f2b" />
+   835→              <XAxis dataKey="hour" tick={{ fill: "#4a5568", fontSize: 10 }} axisLine={{ stroke: "#1a1f2b" }} interval={3} />
+   836→              <YAxis domain={[0, 1]} tick={{ fill: "#4a5568", fontSize: 10 }} axisLine={{ stroke: "#1a1f2b" }} />
+   837→              <Tooltip content={<DarkTooltip />} />
+   838→              <Legend wrapperStyle={{ fontSize: 11 }} />
+   839→              <Area type="monotone" dataKey="Ethereum" stroke="#627EEA" fill="url(#sent-eth)" strokeWidth={2} dot={false} />
+   840→              <Area type="monotone" dataKey="Solana" stroke="#9945FF" fill="url(#sent-sol)" strokeWidth={1.5} dot={false} />
+   841→              <Area type="monotone" dataKey="Arbitrum" stroke="#28A0F0" fill="url(#sent-arb)" strokeWidth={1.5} dot={false} />
+   842→            </AreaChart>
+   843→          </ResponsiveContainer>
+   844→        </div>
+   845→      </motion.div>
+   846→    </motion.div>
+   847→  );
+   848→}

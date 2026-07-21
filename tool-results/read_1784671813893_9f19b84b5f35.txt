@@ -1,0 +1,910 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→import React, { useState, useEffect, useCallback, useMemo } from "react";
+     4→     4→import { motion, AnimatePresence } from "framer-motion";
+     5→     5→import {
+     6→     6→  Card,
+     7→     7→  CardContent,
+     8→     8→  CardHeader,
+     9→     9→  CardTitle,
+    10→    10→} from "@/components/ui/card";
+    11→    11→import { Badge } from "@/components/ui/badge";
+    12→    12→import { Progress } from "@/components/ui/progress";
+    13→    13→import { ScrollArea } from "@/components/ui/scroll-area";
+    14→    14→import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+    15→    15→import {
+    16→    16→  AreaChart,
+    17→    17→  Area,
+    18→    18→  BarChart,
+    19→    19→  Bar,
+    20→    20→  PieChart,
+    21→    21→  Pie,
+    22→    22→  Cell,
+    23→    23→  XAxis,
+    24→    24→  YAxis,
+    25→    25→  CartesianGrid,
+    26→    26→  Tooltip,
+    27→    27→  ResponsiveContainer,
+    28→    28→} from "recharts";
+    29→    29→import {
+    30→    30→  type SignalEntry,
+    31→    31→  type ChainInfo,
+    32→    32→  type PlaneStatus,
+    33→    33→  type TradingPair,
+    34→    34→  CHAINS,
+    35→    35→  VM_FAMILIES,
+    36→    36→  LIVE_SIGNALS,
+    37→    37→  PLANE_STATUSES,
+    38→    38→  TRADING_PAIRS,
+    39→    39→  generateNewSignal,
+    40→    40→} from "@/lib/trion-data";
+    41→    41→
+    42→    42→// ─── Shared Animation Variants ──────────────────────────────────
+    43→    43→const containerVariants = {
+    44→    44→  hidden: { opacity: 0 },
+    45→    45→  visible: {
+    46→    46→    opacity: 1,
+    47→    47→    transition: { staggerChildren: 0.06, delayChildren: 0.05 },
+    48→    48→  },
+    49→    49→};
+    50→    50→const itemVariants = {
+    51→    51→  hidden: { opacity: 0, y: 16 },
+    52→    52→  visible: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" } },
+    53→    53→};
+    54→    54→const fastItemVariants = {
+    55→    55→  hidden: { opacity: 0, y: 10 },
+    56→    56→  visible: { opacity: 1, y: 0, transition: { duration: 0.25, ease: "easeOut" } },
+    57→    57→};
+    58→    58→
+    59→    59→// ─── Helpers ────────────────────────────────────────────────────
+    60→    60→const PLANE_COLORS: Record<string, string> = {
+    61→    61→  Physical: "#00D4AA",
+    62→    62→  Mental: "#7B61FF",
+    63→    63→  Spiritual: "#FF6B6B",
+    64→    64→  Conscious: "#FFD93D",
+    65→    65→  ANIMA: "#FF8C42",
+    66→    66→};
+    67→    67→const WEIGHT_LABELS = ["α", "β", "γ", "δ", "ε"];
+    68→    68→const STATUS_COLORS: Record<string, string> = {
+    69→    69→  COHERENT: "#00D4AA",
+    70→    70→  SILENCE: "#FF5252",
+    71→    71→  MANIPULATION_ALERT: "#FF6B6B",
+    72→    72→  GENESIS: "#7B61FF",
+    73→    73→  TRAJECTORY_ANOMALY: "#FFD93D",
+    74→    74→  RESURRECTION: "#6FBCF0",
+    75→    75→  FORK_DIVERGENCE: "#FF8C42",
+    76→    76→  LIQUIDITY_HEALTH: "#4DDFBA",
+    77→    77→  CROSS_CHAIN_COHERENCE: "#00C1DE",
+    78→    78→};
+    79→    79→const CHAIN_STATUS_DOT: Record<string, string> = {
+    80→    80→  online: "#00D4AA",
+    81→    81→  indexing: "#FFD93D",
+    82→    82→  degraded: "#FF8C42",
+    83→    83→  offline: "#FF5252",
+    84→    84→};
+    85→    85→
+    86→    86→function MiniSparkline({ data, color, width = 64, height = 24 }: { data: number[]; color: string; width?: number; height?: number }) {
+    87→    87→  const min = Math.min(...data);
+    88→    88→  const max = Math.max(...data);
+    89→    89→  const range = max - min || 1;
+    90→    90→  const pts = data
+    91→    91→    .map((v, i) => {
+    92→    92→      const x = (i / (data.length - 1)) * width;
+    93→    93→      const y = height - ((v - min) / range) * (height - 4) - 2;
+    94→    94→      return `${x},${y}`;
+    95→    95→    })
+    96→    96→    .join(" ");
+    97→    97→  return (
+    98→    98→    <svg width={width} height={height} className="shrink-0">
+    99→    99→      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+   100→   100→    </svg>
+   101→   101→  );
+   102→   102→}
+   103→   103→
+   104→   104→// Generate 24h network activity data
+   105→   105→function generateNetworkActivity() {
+   106→   106→  const hours = Array.from({ length: 24 }, (_, i) => {
+   107→   107→    const h = (new Date().getHours() - 23 + i + 24) % 24;
+   108→   108→    return `${h.toString().padStart(2, "0")}:00`;
+   109→   109→  });
+   110→   110→  return hours.map((hour) => ({
+   111→   111→    time: hour,
+   112→   112→    throughput: 280 + Math.floor(Math.random() * 180 + Math.sin(parseInt(hour) / 3) * 60),
+   113→   113→    signals: 200 + Math.floor(Math.random() * 120),
+   114→   114→  }));
+   115→   115→}
+   116→   116→
+   117→   117→// Firewall events
+   118→   118→const FIREWALL_EVENTS = [
+   119→   119→  { time: "14:23:41", type: "MEV_SANDWICH", chain: "Ethereum", pair: "ETH/USDC", action: "Blocked" },
+   120→   120→  { time: "14:21:17", type: "FRONT_RUN", chain: "Arbitrum", pair: "ARB/USDC", action: "Blocked" },
+   121→   121→  { time: "14:19:05", type: "HONEYPOT", chain: "BNB Chain", pair: "TOKEN/USDT", action: "Blocked" },
+   122→   122→  { time: "14:15:33", type: "RECURSIVE_BORROW", chain: "Ethereum", pair: "USDC/USDT", action: "Monitored" },
+   123→   123→  { time: "14:12:08", type: "ORACLE_PUSH", chain: "Polygon", pair: "MATIC/USDC", action: "Blocked" },
+   124→   124→];
+   125→   125→
+   126→   126→// ═══════════════════════════════════════════════════════════════
+   127→   127→// 1. OVERVIEW PAGE
+   128→   128→// ═══════════════════════════════════════════════════════════════
+   129→   129→export function OverviewPage() {
+   130→   130→  const [signalCount, setSignalCount] = useState(51904);
+   131→   131→  const [vectorsIndexed, setVectorsIndexed] = useState("2.4M");
+   132→   132→  const [chainsActive, setChainsActive] = useState(87);
+   133→   133→  const [attacksIntercepted, setAttacksIntercepted] = useState(1381);
+   134→   134→  const [coherence, setCoherence] = useState(0.847);
+   135→   135→  const [signals, setSignals] = useState<SignalEntry[]>(LIVE_SIGNALS.slice(0, 20));
+   136→   136→  const [networkData] = useState(generateNetworkActivity);
+   137→   137→
+   138→   138→  const sparklines = useMemo(() => ({
+   139→   139→    signals: Array.from({ length: 12 }, () => 50 + Math.random() * 50),
+   140→   140→    vectors: Array.from({ length: 12 }, () => 60 + Math.random() * 40),
+   141→   141→    chains: Array.from({ length: 12 }, () => 80 + Math.random() * 20),
+   142→   142→    attacks: Array.from({ length: 12 }, () => Math.random() * 30),
+   143→   143→    coherence: Array.from({ length: 12 }, () => 0.78 + Math.random() * 0.18),
+   144→   144→  }), []);
+   145→   145→
+   146→   146→  useEffect(() => {
+   147→   147→    const interval = setInterval(() => {
+   148→   148→      setSignalCount((c) => c + Math.floor(Math.random() * 3) + 1);
+   149→   149→      setAttacksIntercepted((c) => c + (Math.random() > 0.85 ? 1 : 0));
+   150→   150→      setCoherence((c) => Math.round((c + (Math.random() - 0.48) * 0.003) * 1000) / 1000);
+   151→   151→      setChainsActive((c) => (Math.random() > 0.92 ? c + 1 : c));
+   152→   152→      setSignals((prev) => {
+   153→   153→        const sig = generateNewSignal();
+   154→   154→        return [sig, ...prev.slice(0, 19)];
+   155→   155→      });
+   156→   156→    }, 3000);
+   157→   157→    return () => clearInterval(interval);
+   158→   158→  }, []);
+   159→   159→
+   160→   160→  const kpiCards = [
+   161→   161→    { label: "Signals Published", value: signalCount.toLocaleString(), change: "+127 last hour", color: "#00D4AA", spark: sparklines.signals },
+   162→   162→    { label: "Vectors Indexed", value: vectorsIndexed, change: "+12.4K today", color: "#7B61FF", spark: sparklines.vectors },
+   163→   163→    { label: "Chains Active", value: `${chainsActive}/100`, change: `+${chainsActive - 84} this week`, color: "#FFD93D", spark: sparklines.chains },
+   164→   164→    { label: "Attacks Intercepted", value: attacksIntercepted.toLocaleString(), change: "+3 today", color: "#FF6B6B", spark: sparklines.attacks },
+   165→   165→    { label: "System Coherence", value: coherence.toFixed(3), change: coherence > 0.84 ? "↑ Nominal" : "↓ Fluctuating", color: "#00D4AA", spark: sparklines.coherence },
+   166→   166→  ];
+   167→   167→
+   168→   168→  const weights = ["α", "β", "γ", "δ", "ε"];
+   169→   169→
+   170→   170→  return (
+   171→   171→    <motion.div variants={containerVariants} initial="hidden" animate="visible" className="space-y-6">
+   172→   172→      {/* KPI Cards */}
+   173→   173→      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+   174→   174→        {kpiCards.map((kpi, i) => (
+   175→   175→          <motion.div key={kpi.label} variants={itemVariants}>
+   176→   176→            <div className="glass-card p-4 relative overflow-hidden group">
+   177→   177→              <div className="absolute top-0 left-0 right-0 h-[2px]" style={{ background: `linear-gradient(90deg, ${kpi.color}, transparent)` }} />
+   178→   178→              <p className="text-[11px] uppercase tracking-wider text-[#8b95a5] mb-2">{kpi.label}</p>
+   179→   179→              <div className="flex items-end justify-between gap-2">
+   180→   180→                <span className="text-[28px] font-bold tabular-nums text-[#e8ecf1] leading-none">{kpi.value}</span>
+   181→   181→                <MiniSparkline data={kpi.spark} color={kpi.color} />
+   182→   182→              </div>
+   183→   183→              <p className="text-[11px] mt-2" style={{ color: kpi.color }}>{kpi.change}</p>
+   184→   184→            </div>
+   185→   185→          </motion.div>
+   186→   186→        ))}
+   187→   187→      </div>
+   188→   188→
+   189→   189→      {/* Five-Plane Coherence Pipeline */}
+   190→   190→      <motion.div variants={itemVariants}>
+   191→   191→        <div className="glass-card p-5">
+   192→   192→          <div className="flex items-center justify-between mb-4">
+   193→   193→            <h3 className="text-sm font-semibold text-[#e8ecf1]">Five-Plane Coherence Pipeline</h3>
+   194→   194→            <span className="text-[11px] text-[#8b95a5] font-mono">MF = Σ(wᵢ · Pᵢ) = {coherence.toFixed(3)}</span>
+   195→   195→          </div>
+   196→   196→          <div className="flex items-center gap-1 overflow-x-auto pb-2">
+   197→   197→            {PLANE_STATUSES.map((plane, i) => (
+   198→   198→              <React.Fragment key={plane.symbol}>
+   199→   199→                <div className="glass-card-elevated min-w-[140px] flex-1 p-3 text-center relative">
+   200→   200→                  <div className="absolute top-0 left-0 right-0 h-[2px]" style={{ background: plane.color }} />
+   201→   201→                  <div className="text-2xl font-bold mb-1" style={{ color: plane.color }}>{plane.symbol}</div>
+   202→   202→                  <div className="text-[11px] text-[#8b95a5] mb-2">{plane.name}</div>
+   203→   203→                  <div className="text-lg font-bold tabular-nums text-[#e8ecf1] mb-1">{plane.score.toFixed(3)}</div>
+   204→   204→                  <div className="text-[10px] text-[#8b95a5] mb-2">w = {weights[i]}</div>
+   205→   205→                  <div className="w-full h-1.5 rounded-full bg-[#0a0c12] overflow-hidden">
+   206→   206→                    <motion.div
+   207→   207→                      className="h-full rounded-full"
+   208→   208→                      style={{ background: plane.color }}
+   209→   209→                      initial={{ width: 0 }}
+   210→   210→                      animate={{ width: `${plane.score * 100}%` }}
+   211→   211→                      transition={{ duration: 0.8, delay: i * 0.1, ease: "easeOut" }}
+   212→   212→                    />
+   213→   213→                  </div>
+   214→   214→                  <div className="text-[9px] text-[#4a5568] mt-1 uppercase">{plane.status}</div>
+   215→   215→                </div>
+   216→   216→                {i < PLANE_STATUSES.length - 1 && (
+   217→   217→                  <div className="text-[#4a5568] text-lg shrink-0 px-0.5">›</div>
+   218→   218→                )}
+   219→   219→              </React.Fragment>
+   220→   220→            ))}
+   221→   221→          </div>
+   222→   222→          {/* Master equation */}
+   223→   223→          <div className="mt-4 bg-[#0a0c12] rounded-lg p-3 font-mono text-[11px] leading-relaxed overflow-x-auto">
+   224→   224→            <span className="text-[#4a5568]">MF(t) = </span>
+   225→   225→            {PLANE_STATUSES.map((p, i) => (
+   226→   226→              <span key={p.symbol}>
+   227→   227→                <span style={{ color: p.color }}>{weights[i]}·{p.symbol}</span>
+   228→   228→                <span className="text-[#4a5568]">({p.score.toFixed(3)})</span>
+   229→   229→                {i < PLANE_STATUSES.length - 1 && <span className="text-[#4a5568]"> + </span>}
+   230→   230→              </span>
+   231→   231→            ))}
+   232→   232→            <span className="text-[#4a5568]"> = </span>
+   233→   233→            <span className="text-[#00D4AA] font-bold">{coherence.toFixed(3)}</span>
+   234→   234→            <span className="text-[#4a5568]"> · Θ_min = 0.550 · </span>
+   235→   235→            <span className="text-[#00D4AA]">NOMINAL</span>
+   236→   236→          </div>
+   237→   237→        </div>
+   238→   238→      </motion.div>
+   239→   239→
+   240→   240→      {/* Live Signals Table + Chain Health */}
+   241→   241→      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+   242→   242→        {/* Signals Table — 60% */}
+   243→   243→        <motion.div variants={itemVariants} className="lg:col-span-3">
+   244→   244→          <div className="glass-card p-4">
+   245→   245→            <div className="flex items-center justify-between mb-3">
+   246→   246→              <h3 className="text-sm font-semibold text-[#e8ecf1]">Live Signals</h3>
+   247→   247→              <div className="flex items-center gap-1.5">
+   248→   248→                <span className="relative flex h-2 w-2">
+   249→   249→                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#00D4AA] opacity-75" />
+   250→   250→                  <span className="relative inline-flex rounded-full h-2 w-2 bg-[#00D4AA]" />
+   251→   251→                </span>
+   252→   252→                <span className="text-[10px] text-[#00D4AA]">LIVE</span>
+   253→   253→              </div>
+   254→   254→            </div>
+   255→   255→            <ScrollArea className="h-[320px]">
+   256→   256→              <table className="w-full text-[11px]">
+   257→   257→                <thead>
+   258→   258→                  <tr className="text-[#8b95a5] uppercase tracking-wider border-b border-[rgba(255,255,255,0.06)]">
+   259→   259→                    <th className="text-left py-2 px-2 font-medium">Time</th>
+   260→   260→                    <th className="text-left py-2 px-2 font-medium">Entity</th>
+   261→   261→                    <th className="text-left py-2 px-2 font-medium">Chain</th>
+   262→   262→                    <th className="text-left py-2 px-2 font-medium">Signal</th>
+   263→   263→                    <th className="text-right py-2 px-2 font-medium">C(t)</th>
+   264→   264→                    <th className="text-right py-2 px-2 font-medium">Θ(t)</th>
+   265→   265→                    <th className="text-right py-2 px-2 font-medium">Status</th>
+   266→   266→                  </tr>
+   267→   267→                </thead>
+   268→   268→                <tbody>
+   269→   269→                  <AnimatePresence mode="popLayout">
+   270→   270→                    {signals.map((sig) => (
+   271→   271→                      <motion.tr
+   272→   272→                        key={sig.id}
+   273→   273→                        initial={{ opacity: 0, x: -8 }}
+   274→   274→                        animate={{ opacity: 1, x: 0 }}
+   275→   275→                        exit={{ opacity: 0 }}
+   276→   276→                        transition={{ duration: 0.3 }}
+   277→   277→                        className="border-b border-[rgba(255,255,255,0.06)] hover:bg-[rgba(255,255,255,0.02)] transition-colors"
+   278→   278→                      >
+   279→   279→                        <td className="py-2 px-2 tabular-nums text-[#8b95a5]">{sig.time}</td>
+   280→   280→                        <td className="py-2 px-2 font-mono text-[#e8ecf1]">{sig.entityShort}</td>
+   281→   281→                        <td className="py-2 px-2">
+   282→   282→                          <span className="flex items-center gap-1.5">
+   283→   283→                            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: sig.chainColor }} />
+   284→   284→                            <span className="text-[#c0c6d0]">{sig.chain}</span>
+   285→   285→                          </span>
+   286→   286→                        </td>
+   287→   287→                        <td className="py-2 px-2 text-[#e8ecf1]">{sig.signalType}</td>
+   288→   288→                        <td className="py-2 px-2 text-right tabular-nums" style={{ color: sig.coherence > 0.55 ? "#00D4AA" : "#FF5252" }}>
+   289→   289→                          {sig.coherence.toFixed(3)}
+   290→   290→                        </td>
+   291→   291→                        <td className="py-2 px-2 text-right tabular-nums text-[#8b95a5]">{sig.threshold.toFixed(3)}</td>
+   292→   292→                        <td className="py-2 px-2 text-right">
+   293→   293→                          <span
+   294→   294→                            className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium"
+   295→   295→                            style={{
+   296→   296→                              color: STATUS_COLORS[sig.status] || "#8b95a5",
+   297→   297→                              backgroundColor: `${STATUS_COLORS[sig.status] || "#8b95a5"}15`,
+   298→   298→                            }}
+   299→   299→                          >
+   300→   300→                            {sig.status}
+   301→   301→                          </span>
+   302→   302→                        </td>
+   303→   303→                      </motion.tr>
+   304→   304→                    ))}
+   305→   305→                  </AnimatePresence>
+   306→   306→                </tbody>
+   307→   307→              </table>
+   308→   308→            </ScrollArea>
+   309→   309→          </div>
+   310→   310→        </motion.div>
+   311→   311→
+   312→   312→        {/* Chain Health — 40% */}
+   313→   313→        <motion.div variants={itemVariants} className="lg:col-span-2">
+   314→   314→          <div className="glass-card p-4 h-full">
+   315→   315→            <h3 className="text-sm font-semibold text-[#e8ecf1] mb-3">Chain Health</h3>
+   316→   316→            <ScrollArea className="h-[320px]">
+   317→   317→              <div className="space-y-1">
+   318→   318→                {CHAINS.map((chain) => (
+   319→   319→                  <div
+   320→   320→                    key={chain.id}
+   321→   321→                    className="flex items-center gap-3 py-2 px-2 rounded-lg hover:bg-[rgba(255,255,255,0.02)] transition-colors"
+   322→   322→                  >
+   323→   323→                    <span
+   324→   324→                      className="w-2 h-2 rounded-full shrink-0"
+   325→   325→                      style={{ backgroundColor: CHAIN_STATUS_DOT[chain.status] }}
+   326→   326→                    />
+   327→   327→                    <span className="text-sm text-[#e8ecf1] shrink-0 w-24 truncate">{chain.name}</span>
+   328→   328→                    <span className="text-[10px] text-[#8b95a5] tabular-nums shrink-0 w-14 text-right">{chain.latency}</span>
+   329→   329→                    <span className="text-[10px] text-[#4a5568] tabular-nums shrink-0 w-20 text-right font-mono">
+   330→   330→                      #{chain.blockHeight.toLocaleString()}
+   331→   331→                    </span>
+   332→   332→                    <span className="text-[10px] tabular-nums shrink-0 w-14 text-right" style={{ color: chain.bhCount > 100000 ? "#00D4AA" : "#8b95a5" }}>
+   333→   333→                      {chain.bhCount.toLocaleString()}
+   334→   334→                    </span>
+   335→   335→                  </div>
+   336→   336→                ))}
+   337→   337→              </div>
+   338→   338→            </ScrollArea>
+   339→   339→          </div>
+   340→   340→        </motion.div>
+   341→   341→      </div>
+   342→   342→
+   343→   343→      {/* Network Activity Chart */}
+   344→   344→      <motion.div variants={itemVariants}>
+   345→   345→        <div className="glass-card p-4">
+   346→   346→          <div className="flex items-center justify-between mb-4">
+   347→   347→            <h3 className="text-sm font-semibold text-[#e8ecf1]">Network Activity — 24h</h3>
+   348→   348→            <div className="flex items-center gap-4 text-[10px]">
+   349→   349→              <span className="flex items-center gap-1.5"><span className="w-2.5 h-0.5 rounded-full bg-[#00D4AA]" />Throughput</span>
+   350→   350→              <span className="flex items-center gap-1.5"><span className="w-2.5 h-0.5 rounded-full bg-[#7B61FF]" />Signals</span>
+   351→   351→            </div>
+   352→   352→          </div>
+   353→   353→          <div className="h-[200px]">
+   354→   354→            <ResponsiveContainer width="100%" height="100%">
+   355→   355→              <AreaChart data={networkData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   356→   356→                <defs>
+   357→   357→                  <linearGradient id="gradTeal" x1="0" y1="0" x2="0" y2="1">
+   358→   358→                    <stop offset="0%" stopColor="#00D4AA" stopOpacity={0.25} />
+   359→   359→                    <stop offset="100%" stopColor="#00D4AA" stopOpacity={0} />
+   360→   360→                  </linearGradient>
+   361→   361→                  <linearGradient id="gradPurple" x1="0" y1="0" x2="0" y2="1">
+   362→   362→                    <stop offset="0%" stopColor="#7B61FF" stopOpacity={0.15} />
+   363→   363→                    <stop offset="100%" stopColor="#7B61FF" stopOpacity={0} />
+   364→   364→                  </linearGradient>
+   365→   365→                </defs>
+   366→   366→                <CartesianGrid strokeDasharray="3 3" stroke="#1a1f2b" vertical={false} />
+   367→   367→                <XAxis dataKey="time" tick={{ fill: "#4a5568", fontSize: 10 }} axisLine={false} tickLine={false} />
+   368→   368→                <YAxis tick={{ fill: "#4a5568", fontSize: 10 }} axisLine={false} tickLine={false} />
+   369→   369→                <Tooltip
+   370→   370→                  contentStyle={{ background: "#0e1019", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, fontSize: 11 }}
+   371→   371→                  labelStyle={{ color: "#8b95a5" }}
+   372→   372→                  itemStyle={{ color: "#e8ecf1" }}
+   373→   373→                />
+   374→   374→                <Area type="monotone" dataKey="throughput" stroke="#00D4AA" strokeWidth={1.5} fill="url(#gradTeal)" />
+   375→   375→                <Area type="monotone" dataKey="signals" stroke="#7B61FF" strokeWidth={1.5} fill="url(#gradPurple)" />
+   376→   376→              </AreaChart>
+   377→   377→            </ResponsiveContainer>
+   378→   378→          </div>
+   379→   379→        </div>
+   380→   380→      </motion.div>
+   381→   381→    </motion.div>
+   382→   382→  );
+   383→   383→}
+   384→   384→
+   385→   385→// ═══════════════════════════════════════════════════════════════
+   386→   386→// 2. SIGNALS PAGE
+   387→   387→// ═══════════════════════════════════════════════════════════════
+   388→   388→const SIGNAL_FILTERS = ["ALL", "COHERENT", "SILENCE", "MANIPULATION_ALERT", "GENESIS"] as const;
+   389→   389→type SignalFilter = (typeof SIGNAL_FILTERS)[number];
+   390→   390→
+   391→   391→export function SignalsPage() {
+   392→   392→  const [filter, setFilter] = useState<SignalFilter>("ALL");
+   393→   393→  const [signals, setSignals] = useState<SignalEntry[]>(LIVE_SIGNALS);
+   394→   394→
+   395→   395→  const addSignal = useCallback(() => {
+   396→   396→    const sig = generateNewSignal();
+   397→   397→    setSignals((prev) => [sig, ...prev].slice(0, 80));
+   398→   398→  }, []);
+   399→   399→
+   400→   400→  useEffect(() => {
+   401→   401→    const interval = setInterval(addSignal, 2000);
+   402→   402→    return () => clearInterval(interval);
+   403→   403→  }, [addSignal]);
+   404→   404→
+   405→   405→  const filtered = useMemo(() => {
+   406→   406→    if (filter === "ALL") return signals;
+   407→   407→    return signals.filter((s) => s.status === filter);
+   408→   408→  }, [signals, filter]);
+   409→   409→
+   410→   410→  return (
+   411→   411→    <motion.div variants={containerVariants} initial="hidden" animate="visible" className="space-y-4">
+   412→   412→      {/* Filter Buttons */}
+   413→   413→      <motion.div variants={itemVariants} className="flex flex-wrap gap-2">
+   414→   414→        {SIGNAL_FILTERS.map((f) => (
+   415→   415→          <button
+   416→   416→            key={f}
+   417→   417→            onClick={() => setFilter(f)}
+   418→   418→            className={`px-4 py-1.5 rounded-full text-[11px] font-semibold uppercase tracking-wider transition-all duration-200 ${
+   419→   419→              filter === f
+   420→   420→                ? "bg-[#00D4AA] text-[#08090d]"
+   421→   421→                : "bg-[rgba(255,255,255,0.04)] text-[#8b95a5] hover:bg-[rgba(255,255,255,0.08)] hover:text-[#e8ecf1]"
+   422→   422→            }`}
+   423→   423→          >
+   424→   424→            {f.replace(/_/g, " ")}
+   425→   425→            <span className="ml-1.5 opacity-60">
+   426→   426→              {f === "ALL" ? signals.length : signals.filter((s) => s.status === f).length}
+   427→   427→            </span>
+   428→   428→          </button>
+   429→   429→        ))}
+   430→   430→      </motion.div>
+   431→   431→
+   432→   432→      {/* Full Signal Table */}
+   433→   433→      <motion.div variants={itemVariants}>
+   434→   434→        <div className="glass-card overflow-hidden">
+   435→   435→          <ScrollArea className="h-[600px]">
+   436→   436→            <table className="w-full text-[11px] min-w-[1100px]">
+   437→   437→              <thead className="sticky top-0 z-10 bg-[#0e1019]/95 backdrop-blur-sm">
+   438→   438→                <tr className="text-[#8b95a5] uppercase tracking-wider border-b border-[rgba(255,255,255,0.06)]">
+   439→   439→                  <th className="text-left py-2.5 px-2.5 font-medium">Time</th>
+   440→   440→                  <th className="text-left py-2.5 px-2.5 font-medium">Entity</th>
+   441→   441→                  <th className="text-left py-2.5 px-2.5 font-medium">Chain</th>
+   442→   442→                  <th className="text-left py-2.5 px-2.5 font-medium">Signal Type</th>
+   443→   443→                  <th className="text-right py-2.5 px-2.5 font-medium">C(t)</th>
+   444→   444→                  <th className="text-right py-2.5 px-2.5 font-medium">Θ(t)</th>
+   445→   445→                  <th className="text-right py-2.5 px-2.5 font-medium">Φ</th>
+   446→   446→                  <th className="text-right py-2.5 px-2.5 font-medium">M</th>
+   447→   447→                  <th className="text-right py-2.5 px-2.5 font-medium">Σ</th>
+   448→   448→                  <th className="text-right py-2.5 px-2.5 font-medium">K</th>
+   449→   449→                  <th className="text-right py-2.5 px-2.5 font-medium">A</th>
+   450→   450→                  <th className="text-right py-2.5 px-2.5 font-medium">MF</th>
+   451→   451→                  <th className="text-left py-2.5 px-2.5 font-medium">Limiting</th>
+   452→   452→                  <th className="text-center py-2.5 px-2.5 font-medium">Status</th>
+   453→   453→                  <th className="text-center py-2.5 px-2.5 font-medium">Source</th>
+   454→   454→                </tr>
+   455→   455→              </thead>
+   456→   456→              <tbody>
+   457→   457→                <AnimatePresence mode="popLayout">
+   458→   458→                  {filtered.map((sig) => (
+   459→   459→                    <motion.tr
+   460→   460→                      key={sig.id}
+   461→   461→                      initial={{ opacity: 0, x: -6, backgroundColor: "rgba(0,212,170,0.06)" }}
+   462→   462→                      animate={{ opacity: 1, x: 0, backgroundColor: "rgba(0,0,0,0)" }}
+   463→   463→                      transition={{ duration: 0.35 }}
+   464→   464→                      className="border-b border-[rgba(255,255,255,0.06)] hover:bg-[rgba(255,255,255,0.015)] transition-colors"
+   465→   465→                    >
+   466→   466→                      <td className="py-2 px-2.5 tabular-nums text-[#8b95a5] whitespace-nowrap">{sig.time}</td>
+   467→   467→                      <td className="py-2 px-2.5 font-mono text-[#e8ecf1]">{sig.entityShort}</td>
+   468→   468→                      <td className="py-2 px-2.5">
+   469→   469→                        <span className="flex items-center gap-1.5">
+   470→   470→                          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: sig.chainColor }} />
+   471→   471→                          <span className="text-[#c0c6d0]">{sig.chain}</span>
+   472→   472→                        </span>
+   473→   473→                      </td>
+   474→   474→                      <td className="py-2 px-2.5 text-[#e8ecf1] whitespace-nowrap">{sig.signalType}</td>
+   475→   475→                      <td className="py-2 px-2.5 text-right tabular-nums font-medium" style={{ color: sig.coherence > 0.55 ? "#00D4AA" : "#FF5252" }}>
+   476→   476→                        {sig.coherence.toFixed(3)}
+   477→   477→                      </td>
+   478→   478→                      <td className="py-2 px-2.5 text-right tabular-nums text-[#8b95a5]">{sig.threshold.toFixed(3)}</td>
+   479→   479→                      <td className="py-2 px-2.5 text-right tabular-nums" style={{ color: PLANE_COLORS.Physical }}>{sig.phi.toFixed(3)}</td>
+   480→   480→                      <td className="py-2 px-2.5 text-right tabular-nums" style={{ color: PLANE_COLORS.Mental }}>{sig.mental.toFixed(3)}</td>
+   481→   481→                      <td className="py-2 px-2.5 text-right tabular-nums" style={{ color: PLANE_COLORS.Spiritual }}>{sig.sigma.toFixed(3)}</td>
+   482→   482→                      <td className="py-2 px-2.5 text-right tabular-nums" style={{ color: PLANE_COLORS.Conscious }}>{(sig.coherence * 0.1).toFixed(3)}</td>
+   483→   483→                      <td className="py-2 px-2.5 text-right tabular-nums" style={{ color: PLANE_COLORS.ANIMA }}>{sig.anima.toFixed(3)}</td>
+   484→   484→                      <td className="py-2 px-2.5 text-right tabular-nums text-[#c0c6d0]">{sig.mfScore.toFixed(2)}</td>
+   485→   485→                      <td className="py-2 px-2.5" style={{ color: PLANE_COLORS[sig.limitingPlane] || "#8b95a5" }}>
+   486→   486→                        {sig.limitingPlane}
+   487→   487→                      </td>
+   488→   488→                      <td className="py-2 px-2.5 text-center">
+   489→   489→                        <span
+   490→   490→                          className="inline-block px-2 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap"
+   491→   491→                          style={{
+   492→   492→                            color: STATUS_COLORS[sig.status] || "#8b95a5",
+   493→   493→                            backgroundColor: `${STATUS_COLORS[sig.status] || "#8b95a5"}18`,
+   494→   494→                          }}
+   495→   495→                        >
+   496→   496→                          {sig.status.replace(/_/g, " ")}
+   497→   497→                        </span>
+   498→   498→                      </td>
+   499→   499→                      <td className="py-2 px-2.5 text-center">
+   500→   500→                        <span className="inline-flex items-center gap-1">
+   501→   501→                          <span
+   502→   502→                            className="w-1.5 h-1.5 rounded-full"
+   503→   503→                            style={{ backgroundColor: sig.dataSource === "LIVE" ? "#00D4AA" : "#4a5568" }}
+   504→   504→                          />
+   505→   505→                          <span className="text-[10px] text-[#8b95a5]">{sig.dataSource}</span>
+   506→   506→                        </span>
+   507→   507→                      </td>
+   508→   508→                    </motion.tr>
+   509→   509→                  ))}
+   510→   510→                </AnimatePresence>
+   511→   511→              </tbody>
+   512→   512→            </table>
+   513→   513→          </ScrollArea>
+   514→   514→        </div>
+   515→   515→      </motion.div>
+   516→   516→    </motion.div>
+   517→   517→  );
+   518→   518→}
+   519→   519→
+   520→   520→// ═══════════════════════════════════════════════════════════════
+   521→   521→// 3. CHAINS PAGE
+   522→   522→// ═══════════════════════════════════════════════════════════════
+   523→   523→const CHAIN_SORT = { key: "bhCount", dir: "desc" } as const;
+   524→   524→
+   525→   525→const SORT_ARROWS: Record<string, string> = {
+   526→   526→  asc: " ↑",
+   527→   527→  desc: " ↓",
+   528→   528→};
+   529→   529→
+   530→   530→export function ChainsPage() {
+   531→   531→  const [sortKey, setSortKey] = useState<string>("bhCount");
+   532→   532→  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+   533→   533→
+   534→   534→  const sortedChains = useMemo(() => {
+   535→   535→    return [...CHAINS].sort((a, b) => {
+   536→   536→      const aVal = (a as Record<string, unknown>)[sortKey];
+   537→   537→      const bVal = (b as Record<string, unknown>)[sortKey];
+   538→   538→      if (typeof aVal === "number" && typeof bVal === "number") {
+   539→   539→        return sortDir === "desc" ? bVal - aVal : aVal - bVal;
+   540→   540→      }
+   541→   541→      return 0;
+   542→   542→    });
+   543→   543→  }, [sortKey, sortDir]);
+   544→   544→
+   545→   545→  const handleSort = useCallback((key: string) => {
+   546→   546→    setSortKey((prev) => {
+   547→   547→      if (prev === key) {
+   548→   548→        setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+   549→   549→      } else {
+   550→   550→        setSortDir("desc");
+   551→   551→      }
+   552→   552→      return key;
+   553→   553→    });
+   554→   554→  }, []);
+   555→   555→
+   556→   556→  const pieData = useMemo(() => {
+   557→   557→    return VM_FAMILIES.filter((v) => v.chains > 0).map((vm) => ({
+   558→   558→      name: vm.name,
+   559→   559→      value: vm.chains,
+   560→   560→      color: vm.color,
+   561→   561→    }));
+   562→   562→  }, []);
+   563→   563→
+   564→   564→  const columns = [
+   565→   565→    { key: "name", label: "Chain" },
+   566→   566→    { key: "vm", label: "VM" },
+   567→   567→    { key: "status", label: "Status" },
+   568→   568→    { key: "latency", label: "Latency" },
+   569→   569→    { key: "blockHeight", label: "Block Height" },
+   570→   570→    { key: "bhCount", label: "BH Records" },
+   571→   571→    { key: "tvl", label: "TVL" },
+   572→   572→    { key: "tps", label: "TPS" },
+   573→   573→  ];
+   574→   574→
+   575→   575→  return (
+   576→   576→    <motion.div variants={containerVariants} initial="hidden" animate="visible" className="space-y-6">
+   577→   577→      {/* VM Family Cards */}
+   578→   578→      <motion.div variants={itemVariants}>
+   579→   579→        <h3 className="text-sm font-semibold text-[#e8ecf1] mb-3">VM Families — {VM_FAMILIES.length} Machines</h3>
+   580→   580→        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+   581→   581→          {VM_FAMILIES.map((vm) => (
+   582→   582→            <motion.div key={vm.name} variants={fastItemVariants}>
+   583→   583→              <div className="glass-card p-3 relative overflow-hidden group hover:bg-[rgba(255,255,255,0.02)] transition-colors">
+   584→   584→                <div
+   585→   585→                  className="absolute left-0 top-0 bottom-0 w-[3px] rounded-l-xl"
+   586→   586→                  style={{ background: `linear-gradient(180deg, ${vm.color}, ${vm.color}40)` }}
+   587→   587→                />
+   588→   588→                <div className="flex items-center gap-2 mb-2 pl-2">
+   589→   589→                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: vm.color }} />
+   590→   590→                  <span className="text-[13px] font-bold text-[#e8ecf1]">{vm.name}</span>
+   591→   591→                </div>
+   592→   592→                <div className="pl-2 space-y-1">
+   593→   593→                  <p className="text-[10px] text-[#8b95a5]">{vm.description}</p>
+   594→   594→                  <div className="flex items-center justify-between">
+   595→   595→                    <span className="text-[18px] font-bold tabular-nums text-[#e8ecf1]">{vm.chains}</span>
+   596→   596→                    <span
+   597→   597→                      className="text-[9px] px-1.5 py-0.5 rounded-full font-medium"
+   598→   598→                      style={{
+   599→   599→                        color: vm.status === "online" ? "#00D4AA" : "#FFD93D",
+   600→   600→                        backgroundColor: vm.status === "online" ? "#00D4AA18" : "#FFD93D18",
+   601→   601→                      }}
+   602→   602→                    >
+   603→   603→                      {vm.status.toUpperCase()}
+   604→   604→                    </span>
+   605→   605→                  </div>
+   606→   606→                </div>
+   607→   607→              </div>
+   608→   608→            </motion.div>
+   609→   609→          ))}
+   610→   610→        </div>
+   611→   611→      </motion.div>
+   612→   612→
+   613→   613→      {/* All Chains Table + Pie Chart */}
+   614→   614→      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+   615→   615→        <motion.div variants={itemVariants} className="lg:col-span-3">
+   616→   616→          <div className="glass-card overflow-hidden">
+   617→   617→            <div className="p-4 border-b border-[rgba(255,255,255,0.06)]">
+   618→   618→              <h3 className="text-sm font-semibold text-[#e8ecf1]">All {CHAINS.length} Chains</h3>
+   619→   619→            </div>
+   620→   620→            <ScrollArea className="h-[420px]">
+   621→   621→              <table className="w-full text-[11px] min-w-[700px]">
+   622→   622→                <thead className="sticky top-0 z-10 bg-[#0e1019]/95 backdrop-blur-sm">
+   623→   623→                  <tr className="text-[#8b95a5] uppercase tracking-wider border-b border-[rgba(255,255,255,0.06)]">
+   624→   624→                    {columns.map((col) => (
+   625→   625→                      <th
+   626→   626→                        key={col.key}
+   627→   627→                        onClick={() => handleSort(col.key)}
+   628→   628→                        className={`py-2.5 px-3 font-medium cursor-pointer hover:text-[#e8ecf1] transition-colors select-none ${
+   629→   629→                          col.key === "name" ? "text-left" : col.key === "vm" ? "text-left" : "text-right"
+   630→   630→                        }`}
+   631→   631→                      >
+   632→   632→                        {col.label}
+   633→   633→                        {sortKey === col.key && (
+   634→   634→                          <span className="text-[#00D4AA] text-[9px]">{SORT_ARROWS[sortDir]}</span>
+   635→   635→                        )}
+   636→   636→                      </th>
+   637→   637→                    ))}
+   638→   638→                  </tr>
+   639→   639→                </thead>
+   640→   640→                <tbody>
+   641→   641→                  {sortedChains.map((chain) => (
+   642→   642→                    <tr key={chain.id} className="border-b border-[rgba(255,255,255,0.06)] hover:bg-[rgba(255,255,255,0.015)] transition-colors">
+   643→   643→                      <td className="py-2.5 px-3">
+   644→   644→                        <span className="flex items-center gap-2">
+   645→   645→                          <span className="text-sm" style={{ color: chain.color }}>{chain.icon}</span>
+   646→   646→                          <span className="text-[#e8ecf1] font-medium">{chain.name}</span>
+   647→   647→                        </span>
+   648→   648→                      </td>
+   649→   649→                      <td className="py-2.5 px-3">
+   650→   650→                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium" style={{ color: chain.color, backgroundColor: `${chain.color}18` }}>
+   651→   651→                          {chain.vm}
+   652→   652→                        </span>
+   653→   653→                      </td>
+   654→   654→                      <td className="py-2.5 px-3 text-right">
+   655→   655→                        <span className="inline-flex items-center gap-1.5">
+   656→   656→                          <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: CHAIN_STATUS_DOT[chain.status] }} />
+   657→   657→                          <span className="capitalize text-[#c0c6d0]">{chain.status}</span>
+   658→   658→                        </span>
+   659→   659→                      </td>
+   660→   660→                      <td className="py-2.5 px-3 text-right tabular-nums text-[#8b95a5]">{chain.latency}</td>
+   661→   661→                      <td className="py-2.5 px-3 text-right tabular-nums text-[#c0c6d0] font-mono">#{chain.blockHeight.toLocaleString()}</td>
+   662→   662→                      <td className="py-2.5 px-3 text-right tabular-nums" style={{ color: chain.bhCount > 100000 ? "#00D4AA" : "#8b95a5" }}>
+   663→   663→                        {chain.bhCount.toLocaleString()}
+   664→   664→                      </td>
+   665→   665→                      <td className="py-2.5 px-3 text-right tabular-nums text-[#c0c6d0]">{chain.tvl || "—"}</td>
+   666→   666→                      <td className="py-2.5 px-3 text-right tabular-nums text-[#8b95a5]">{chain.tps?.toLocaleString() || "—"}</td>
+   667→   667→                    </tr>
+   668→   668→                  ))}
+   669→   669→                </tbody>
+   670→   670→              </table>
+   671→   671→            </ScrollArea>
+   672→   672→          </div>
+   673→   673→        </motion.div>
+   674→   674→
+   675→   675→        {/* Pie Chart */}
+   676→   676→        <motion.div variants={itemVariants} className="lg:col-span-1">
+   677→   677→          <div className="glass-card p-4 h-full">
+   678→   678→            <h3 className="text-sm font-semibold text-[#e8ecf1] mb-4">Chains by VM Family</h3>
+   679→   679→            <div className="h-[220px]">
+   680→   680→              <ResponsiveContainer width="100%" height="100%">
+   681→   681→                <PieChart>
+   682→   682→                  <Pie
+   683→   683→                    data={pieData}
+   684→   684→                    cx="50%"
+   685→   685→                    cy="50%"
+   686→   686→                    innerRadius={50}
+   687→   687→                    outerRadius={80}
+   688→   688→                    paddingAngle={2}
+   689→   689→                    dataKey="value"
+   690→   690→                    stroke="none"
+   691→   691→                  >
+   692→   692→                    {pieData.map((entry) => (
+   693→   693→                      <Cell key={entry.name} fill={entry.color} />
+   694→   694→                    ))}
+   695→   695→                  </Pie>
+   696→   696→                  <Tooltip
+   697→   697→                    contentStyle={{ background: "#0e1019", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, fontSize: 11 }}
+   698→   698→                    labelStyle={{ color: "#8b95a5" }}
+   699→   699→                    itemStyle={{ color: "#e8ecf1" }}
+   700→   700→                    formatter={(value: number, name: string) => [`${value} chains`, name]}
+   701→   701→                  />
+   702→   702→                </PieChart>
+   703→   703→              </ResponsiveContainer>
+   704→   704→            </div>
+   705→   705→            <div className="grid grid-cols-2 gap-1.5 mt-2">
+   706→   706→              {pieData.map((d) => (
+   707→   707→                <div key={d.name} className="flex items-center gap-1.5 text-[10px]">
+   708→   708→                  <span className="w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: d.color }} />
+   709→   709→                  <span className="text-[#8b95a5] truncate">{d.name}</span>
+   710→   710→                  <span className="tabular-nums text-[#c0c6d0] ml-auto">{d.value}</span>
+   711→   711→                </div>
+   712→   712→              ))}
+   713→   713→            </div>
+   714→   714→          </div>
+   715→   715→        </motion.div>
+   716→   716→      </div>
+   717→   717→    </motion.div>
+   718→   718→  );
+   719→   719→}
+   720→   720→
+   721→   721→// ═══════════════════════════════════════════════════════════════
+   722→   722→// 4. TRADING PAGE
+   723→   723→// ═══════════════════════════════════════════════════════════════
+   724→   724→const FIREWALL_BADGE: Record<string, { color: string; bg: string }> = {
+   725→   725→  PROTECTED: { color: "#00D4AA", bg: "#00D4AA18" },
+   726→   726→  MONITORING: { color: "#FFD93D", bg: "#FFD93D18" },
+   727→   727→  ALERT: { color: "#FF5252", bg: "#FF525218" },
+   728→   728→};
+   729→   729→
+   730→   730→export function TradingPage() {
+   731→   731→  const [attackCount, setAttackCount] = useState(47);
+   732→   732→  const [swayCount, setSwayCount] = useState(89234);
+   733→   733→
+   734→   734→  useEffect(() => {
+   735→   735→    const interval = setInterval(() => {
+   736→   736→      setAttackCount((c) => c + (Math.random() > 0.9 ? 1 : 0));
+   737→   737→      setSwayCount((c) => c + Math.floor(Math.random() * 5) + 1);
+   738→   738→    }, 4000);
+   739→   739→    return () => clearInterval(interval);
+   740→   740→  }, []);
+   741→   741→
+   742→   742→  const volumeChartData = useMemo(() => {
+   743→   743→    return TRADING_PAIRS.map((p) => ({
+   744→   744→      name: p.pair.split("/")[0],
+   745→   745→      volume: parseFloat(p.volume24h.replace(/[$BKM]/g, "")) * (p.volume24h.includes("B") ? 1000 : p.volume24h.includes("M") ? 1 : 0.001),
+   746→   746→      fill: "#00D4AA",
+   747→   747→    })).sort((a, b) => b.volume - a.volume);
+   748→   748→  }, []);
+   749→   749→
+   750→   750→  const tradingKpis = [
+   751→   751→    { label: "Total Value Protected", value: "$2.4B", change: "+$180M this week", color: "#00D4AA", icon: "🛡️" },
+   752→   752→    { label: "Sways Monitored", value: swayCount.toLocaleString(), change: "+1,247 last hour", color: "#7B61FF", icon: "📊" },
+   753→   753→    { label: "Avg Firewall Latency", value: "0.3ms", change: "↓ 12% from baseline", color: "#FFD93D", icon: "⚡" },
+   754→   754→    { label: "24h Attack Attempts", value: attackCount.toLocaleString(), change: "47 blocked · 0 breached", color: "#FF6B6B", icon: "🔒" },
+   755→   755→  ];
+   756→   756→
+   757→   757→  return (
+   758→   758→    <motion.div variants={containerVariants} initial="hidden" animate="visible" className="space-y-6">
+   759→   759→      {/* KPI Cards */}
+   760→   760→      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+   761→   761→        {tradingKpis.map((kpi) => (
+   762→   762→          <motion.div key={kpi.label} variants={itemVariants}>
+   763→   763→            <div className="glass-card p-4 relative overflow-hidden">
+   764→   764→              <div className="absolute top-0 left-0 right-0 h-[2px]" style={{ background: `linear-gradient(90deg, ${kpi.color}, transparent)` }} />
+   765→   765→              <div className="flex items-center gap-2 mb-2">
+   766→   766→                <span className="text-base">{kpi.icon}</span>
+   767→   767→                <span className="text-[11px] uppercase tracking-wider text-[#8b95a5]">{kpi.label}</span>
+   768→   768→              </div>
+   769→   769→              <div className="text-[26px] font-bold tabular-nums text-[#e8ecf1] leading-none mb-2">{kpi.value}</div>
+   770→   770→              <p className="text-[11px]" style={{ color: kpi.color }}>{kpi.change}</p>
+   771→   771→            </div>
+   772→   772→          </motion.div>
+   773→   773→        ))}
+   774→   774→      </div>
+   775→   775→
+   776→   776→      {/* Trading Pairs Table */}
+   777→   777→      <motion.div variants={itemVariants}>
+   778→   778→        <div className="glass-card overflow-hidden">
+   779→   779→          <div className="p-4 border-b border-[rgba(255,255,255,0.06)]">
+   780→   780→            <h3 className="text-sm font-semibold text-[#e8ecf1]">Trading Pairs — Firewall Protected</h3>
+   781→   781→          </div>
+   782→   782→          <div className="overflow-x-auto">
+   783→   783→            <table className="w-full text-[11px] min-w-[800px]">
+   784→   784→              <thead>
+   785→   785→                <tr className="text-[#8b95a5] uppercase tracking-wider border-b border-[rgba(255,255,255,0.06)]">
+   786→   786→                  <th className="text-left py-2.5 px-3 font-medium">Pair</th>
+   787→   787→                  <th className="text-left py-2.5 px-3 font-medium">Chain</th>
+   788→   788→                  <th className="text-right py-2.5 px-3 font-medium">Price</th>
+   789→   789→                  <th className="text-right py-2.5 px-3 font-medium">24h Change</th>
+   790→   790→                  <th className="text-right py-2.5 px-3 font-medium">Volume</th>
+   791→   791→                  <th className="text-right py-2.5 px-3 font-medium">Liquidity</th>
+   792→   792→                  <th className="text-center py-2.5 px-3 font-medium">Firewall</th>
+   793→   793→                  <th className="text-right py-2.5 px-3 font-medium">BH Score</th>
+   794→   794→                </tr>
+   795→   795→              </thead>
+   796→   796→              <tbody>
+   797→   797→                {TRADING_PAIRS.map((pair) => (
+   798→   798→                  <tr key={pair.pair} className="border-b border-[rgba(255,255,255,0.06)] hover:bg-[rgba(255,255,255,0.015)] transition-colors">
+   799→   799→                    <td className="py-2.5 px-3 text-[#e8ecf1] font-semibold">{pair.pair}</td>
+   800→   800→                    <td className="py-2.5 px-3 text-[#8b95a5]">{pair.chain}</td>
+   801→   801→                    <td className="py-2.5 px-3 text-right tabular-nums text-[#e8ecf1] font-medium">{pair.price}</td>
+   802→   802→                    <td className="py-2.5 px-3 text-right tabular-nums font-medium" style={{ color: pair.change24h >= 0 ? "#00D4AA" : "#FF5252" }}>
+   803→   803→                      {pair.change24h >= 0 ? "+" : ""}{pair.change24h.toFixed(1)}%
+   804→   804→                    </td>
+   805→   805→                    <td className="py-2.5 px-3 text-right tabular-nums text-[#c0c6d0]">{pair.volume24h}</td>
+   806→   806→                    <td className="py-2.5 px-3 text-right tabular-nums text-[#8b95a5]">{pair.liquidity}</td>
+   807→   807→                    <td className="py-2.5 px-3 text-center">
+   808→   808→                      <span
+   809→   809→                        className="inline-block px-2 py-0.5 rounded text-[10px] font-semibold"
+   810→   810→                        style={{
+   811→   811→                          color: FIREWALL_BADGE[pair.firewallStatus]?.color || "#8b95a5",
+   812→   812→                          backgroundColor: FIREWALL_BADGE[pair.firewallStatus]?.bg || "#8b95a518",
+   813→   813→                        }}
+   814→   814→                      >
+   815→   815→                        {pair.firewallStatus}
+   816→   816→                      </span>
+   817→   817→                    </td>
+   818→   818→                    <td className="py-2.5 px-3 text-right">
+   819→   819→                      <div className="flex items-center justify-end gap-2">
+   820→   820→                        <div className="w-12 h-1.5 rounded-full bg-[#0a0c12] overflow-hidden">
+   821→   821→                          <div
+   822→   822→                            className="h-full rounded-full"
+   823→   823→                            style={{
+   824→   824→                              width: `${pair.bhScore * 100}%`,
+   825→   825→                              backgroundColor: pair.bhScore > 0.85 ? "#00D4AA" : pair.bhScore > 0.7 ? "#FFD93D" : "#FF8C42",
+   826→   826→                            }}
+   827→   827→                          />
+   828→   828→                        </div>
+   829→   829→                        <span className="tabular-nums text-[#c0c6d0] w-10 text-right">{pair.bhScore.toFixed(3)}</span>
+   830→   830→                      </div>
+   831→   831→                    </td>
+   832→   832→                  </tr>
+   833→   833→                ))}
+   834→   834→              </tbody>
+   835→   835→            </table>
+   836→   836→          </div>
+   837→   837→        </div>
+   838→   838→      </motion.div>
+   839→   839→
+   840→   840→      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+   841→   841→        {/* Volume Chart */}
+   842→   842→        <motion.div variants={itemVariants} className="lg:col-span-2">
+   843→   843→          <div className="glass-card p-4">
+   844→   844→            <h3 className="text-sm font-semibold text-[#e8ecf1] mb-4">Top Pairs by Volume</h3>
+   845→   845→            <div className="h-[220px]">
+   846→   846→              <ResponsiveContainer width="100%" height="100%">
+   847→   847→                <BarChart data={volumeChartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+   848→   848→                  <CartesianGrid strokeDasharray="3 3" stroke="#1a1f2b" vertical={false} />
+   849→   849→                  <XAxis dataKey="name" tick={{ fill: "#4a5568", fontSize: 10 }} axisLine={false} tickLine={false} />
+   850→   850→                  <YAxis tick={{ fill: "#4a5568", fontSize: 10 }} axisLine={false} tickLine={false} />
+   851→   851→                  <Tooltip
+   852→   852→                    contentStyle={{ background: "#0e1019", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, fontSize: 11 }}
+   853→   853→                    labelStyle={{ color: "#8b95a5" }}
+   854→   854→                    itemStyle={{ color: "#e8ecf1" }}
+   855→   855→                    formatter={(value: number) => [`${value.toLocaleString()}M`, "Volume"]}
+   856→   856→                  />
+   857→   857→                  <Bar dataKey="volume" fill="#00D4AA" radius={[4, 4, 0, 0]} barSize={32} />
+   858→   858→                </BarChart>
+   859→   859→              </ResponsiveContainer>
+   860→   860→            </div>
+   861→   861→          </div>
+   862→   862→        </motion.div>
+   863→   863→
+   864→   864→        {/* Recent Firewall Events */}
+   865→   865→        <motion.div variants={itemVariants} className="lg:col-span-1">
+   866→   866→          <div className="glass-card p-4 h-full">
+   867→   867→            <div className="flex items-center justify-between mb-4">
+   868→   868→              <h3 className="text-sm font-semibold text-[#e8ecf1]">Recent Firewall Events</h3>
+   869→   869→              <span className="relative flex h-2 w-2">
+   870→   870→                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#FF6B6B] opacity-75" />
+   871→   871→                <span className="relative inline-flex rounded-full h-2 w-2 bg-[#FF6B6B]" />
+   872→   872→              </span>
+   873→   873→            </div>
+   874→   874→            <div className="space-y-2">
+   875→   875→              {FIREWALL_EVENTS.map((evt, i) => (
+   876→   876→                <motion.div
+   877→   877→                  key={i}
+   878→   878→                  initial={{ opacity: 0, x: 10 }}
+   879→   879→                  animate={{ opacity: 1, x: 0 }}
+   880→   880→                  transition={{ duration: 0.3, delay: i * 0.08 }}
+   881→   881→                  className="p-2.5 rounded-lg bg-[#0a0c12] border border-[rgba(255,255,255,0.06)]"
+   882→   882→                >
+   883→   883→                  <div className="flex items-center justify-between mb-1">
+   884→   884→                    <span className="text-[10px] font-mono tabular-nums text-[#4a5568]">{evt.time}</span>
+   885→   885→                    <span
+   886→   886→                      className="text-[9px] px-1.5 py-0.5 rounded-full font-semibold"
+   887→   887→                      style={{
+   888→   888→                        color: evt.action === "Blocked" ? "#FF5252" : "#FFD93D",
+   889→   889→                        backgroundColor: evt.action === "Blocked" ? "#FF525218" : "#FFD93D18",
+   890→   890→                      }}
+   891→   891→                    >
+   892→   892→                      {evt.action}
+   893→   893→                    </span>
+   894→   894→                  </div>
+   895→   895→                  <div className="flex items-center gap-1.5">
+   896→   896→                    <span className="text-[11px] font-semibold text-[#FF6B6B]">{evt.type}</span>
+   897→   897→                    <span className="text-[#4a5568]">·</span>
+   898→   898→                    <span className="text-[10px] text-[#8b95a5]">{evt.chain}</span>
+   899→   899→                    <span className="text-[#4a5568]">·</span>
+   900→   900→                    <span className="text-[10px] text-[#c0c6d0]">{evt.pair}</span>
+   901→   901→                  </div>
+   902→   902→                </motion.div>
+   903→   903→              ))}
+   904→   904→            </div>
+   905→   905→          </div>
+   906→   906→        </motion.div>
+   907→   907→      </div>
+   908→   908→    </motion.div>
+   909→   909→  );
+   910→   910→}
