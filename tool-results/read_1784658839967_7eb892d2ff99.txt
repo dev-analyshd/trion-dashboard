@@ -1,0 +1,832 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→import React, { useState, useEffect, useCallback } from "react";
+     4→     4→import { motion, AnimatePresence } from "framer-motion";
+     5→     5→import {
+     6→     6→  Activity, Shield, Database, Brain, Eye, Lock, Cpu, Radio,
+     7→     7→  Globe2, ChevronRight, Bell, Search, RefreshCw, Zap, TrendingUp,
+     8→     8→  TrendingDown, AlertTriangle, CheckCircle2, XCircle, ArrowRight,
+     9→     9→  Layers, Fingerprint, Sword, Heart, BookOpen, Settings, Key,
+    10→    10→  BarChart3, Users, GitBranch, FileCode, Target, Bot, Hexagon,
+    11→    11→  Wifi, WifiOff, Clock, Hash, Thermometer, ShieldCheck,
+    12→    12→  Landmark, Scale, CircleDot, Webhook, Binary, CircuitBoard,
+    13→    13→  type LucideIcon, Menu, X,
+    14→    14→} from "lucide-react";
+    15→    15→import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+    16→    16→import { Badge } from "@/components/ui/badge";
+    17→    17→import { Progress } from "@/components/ui/progress";
+    18→    18→import { ScrollArea } from "@/components/ui/scroll-area";
+    19→    19→import { Separator } from "@/components/ui/separator";
+    20→    20→import { Skeleton } from "@/components/ui/skeleton";
+    21→    21→// Tabs available if needed
+    22→    22→import {
+    23→    23→  CHAINS, VM_FAMILIES, LIVE_SIGNALS, PLANE_STATUSES,
+    24→    24→  GOVERNANCE_ITEMS, FALSIFIABILITY, CRISPR_SIGNATURES,
+    25→    25→  ARCHETYPES, DEPLOYMENTS, RELAYER_STATUS,
+    26→    26→  type SignalEntry, type ChainInfo,
+    27→    27→} from "@/lib/trion-data";
+    28→    28→
+    29→    29→// ─── Icons ──────────────────────────────────────────────────────
+    30→    30→const TrionLogo = () => (
+    31→    31→  <div className="flex items-center gap-2.5">
+    32→    32→    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 via-blue-500 to-cyan-400 flex items-center justify-center shadow-lg shadow-blue-500/20">
+    33→    33→      <Hexagon className="w-4.5 h-4.5 text-white" strokeWidth={2.5} />
+    34→    34→    </div>
+    35→    35→    <div className="flex flex-col">
+    36→    36→      <span className="text-[15px] font-bold tracking-tight text-gray-900 leading-none">TRION</span>
+    37→    37→      <span className="text-[9px] font-medium tracking-[0.15em] text-blue-600 uppercase leading-none mt-0.5">Protocol</span>
+    38→    38→    </div>
+    39→    39→  </div>
+    40→    40→);
+    41→    41→
+    42→    42→const PulsingDot = ({ color = "bg-emerald-500" }: { color?: string }) => (
+    43→    43→  <span className="relative flex h-2 w-2">
+    44→    44→    <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${color} opacity-75`} />
+    45→    45→    <span className={`relative inline-flex rounded-full h-2 w-2 ${color}`} />
+    46→    46→  </span>
+    47→    47→);
+    48→    48→
+    49→    49→const StatusDot = ({ status }: { status: string }) => {
+    50→    50→  const color = status === "online" ? "bg-emerald-500" : status === "indexing" ? "bg-blue-500" : status === "degraded" ? "bg-amber-500" : "bg-red-500";
+    51→    51→  return <span className={`inline-block w-1.5 h-1.5 rounded-full ${color}`} />;
+    52→    52→};
+    53→    53→
+    54→    54→// ─── Sparkline ───────────────────────────────────────────────────
+    55→    55→function Sparkline({ data, color = "#10B981", width = 80, height = 28 }: { data: number[]; color?: string; width?: number; height?: number }) {
+    56→    56→  const min = Math.min(...data), max = Math.max(...data);
+    57→    57→  const range = max - min || 1;
+    58→    58→  const pts = data.map((v, i) => `${(i / (data.length - 1)) * width},${height - ((v - min) / range) * height}`).join(" ");
+    59→    59→  return (
+    60→    60→    <svg width={width} height={height} className="overflow-visible">
+    61→    61→      <defs>
+    62→    62→        <linearGradient id={`grad-${color.replace("#","")}`} x1="0" y1="0" x2="0" y2="1">
+    63→    63→          <stop offset="0%" stopColor={color} stopOpacity="0.15" />
+    64→    64→          <stop offset="100%" stopColor={color} stopOpacity="0" />
+    65→    65→        </linearGradient>
+    66→    66→      </defs>
+    67→    67→      <path d={`M0,${height} L${pts} L${width},${height} Z`} fill={`url(#grad-${color.replace("#","")})`} />
+    68→    68→      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    69→    69→    </svg>
+    70→    70→  );
+    71→    71→}
+    72→    72→
+    73→    73→// ─── Navigation ─────────────────────────────────────────────────
+    74→    74→interface NavItem { id: string; label: string; icon: LucideIcon; badge?: string; badgeColor?: string; section?: string; }
+    75→    75→const NAV_ITEMS: NavItem[] = [
+    76→    76→  { id: "overview", label: "Overview", icon: Activity },
+    77→    77→  { id: "signals", label: "Signals", icon: Radio, badge: "LIVE", badgeColor: "emerald" },
+    78→    78→  { id: "chains", label: "Chains", icon: Globe2 },
+    79→    79→  { id: "akashic", label: "Akashic Index", icon: Database },
+    80→    80→  { id: "planes", label: "Five Planes", icon: Layers },
+    81→    81→  { id: "protocol", label: "Protocol Health", icon: Heart },
+    82→    82→  { id: "anima", label: "ANIMA Intelligence", icon: Brain },
+    83→    83→  { id: "security", label: "Security", icon: Shield },
+    84→    84→  { id: "relayers", label: "Relayers", icon: Wifi },
+    85→    85→  { id: "governance", label: "Governance", icon: Scale },
+    86→    86→  { id: "trading", label: "Trading", icon: TrendingUp },
+    87→    87→  { id: "auditor", label: "Contract Audit", icon: FileCode },
+    88→    88→  { id: "beo", label: "BEO Entities", icon: Users },
+    89→    89→  { id: "sep-1", label: "ACCOUNT", icon: Settings, section: "ACCOUNT" },
+    90→    90→  { id: "api-keys", label: "API Keys", icon: Key },
+    91→    91→  { id: "deployments", label: "Deployments", icon: GitBranch },
+    92→    92→  { id: "settings", label: "Settings", icon: Settings },
+    93→    93→];
+    94→    94→
+    95→    95→// ─── KPI Card ────────────────────────────────────────────────────
+    96→    96→function KpiCard({ label, value, change, changeType, subtitle, accentColor, sparkData }: {
+    97→    97→  label: string; value: string; change: string; changeType: string;
+    98→    98→  subtitle: string; accentColor: string; sparkData: number[];
+    99→    99→}) {
+   100→   100→  const changeColor = changeType === "up" ? "text-emerald-600" : changeType === "down" ? "text-red-500" : changeType === "amber" ? "text-amber-600" : changeType === "purple" ? "text-purple-600" : "text-gray-500";
+   101→   101→  const sparkColor = changeType === "purple" ? "#8B5CF6" : changeType === "amber" ? "#F59E0B" : "#10B981";
+   102→   102→  return (
+   103→   103→    <Card className="border-0 shadow-[0_1px_3px_rgba(0,0,0,0.06),0_1px_2px_rgba(0,0,0,0.04)] hover:shadow-[0_4px_12px_rgba(0,0,0,0.08)] transition-shadow duration-200">
+   104→   104→      <CardContent className="p-4 pb-3">
+   105→   105→        <div className="flex items-center justify-between mb-1">
+   106→   106→          <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">{label}</p>
+   107→   107→          <Sparkline data={sparkData} color={sparkColor} />
+   108→   108→        </div>
+   109→   109→        <p className="text-[26px] font-bold tracking-tight leading-none" style={{ color: accentColor }}>{value}</p>
+   110→   110→        <div className="flex items-center gap-1.5 mt-1.5">
+   111→   111→          {changeType === "up" && <TrendingUp className="w-3 h-3 text-emerald-500" />}
+   112→   112→          {changeType === "down" && <TrendingDown className="w-3 h-3 text-red-500" />}
+   113→   113→          <span className={`text-[11px] font-medium ${changeColor}`}>{change}</span>
+   114→   114→        </div>
+   115→   115→        {subtitle && <p className="text-[10px] text-gray-400 mt-0.5">{subtitle}</p>}
+   116→   116→      </CardContent>
+   117→   117→    </Card>
+   118→   118→  );
+   119→   119→}
+   120→   120→
+   121→   121→// ─── Five-Plane Pipeline ────────────────────────────────────────
+   122→   122→function CoherencePipeline({ planes, coherence, threshold }: {
+   123→   123→  planes: typeof PLANE_STATUSES; coherence: number; threshold: number;
+   124→   124→}) {
+   125→   125→  const passing = coherence >= threshold;
+   126→   126→  return (
+   127→   127→    <Card className="border-0 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+   128→   128→      <CardContent className="p-4">
+   129→   129→        <div className="flex items-center justify-between mb-3">
+   130→   130→          <div>
+   131→   131→            <div className="flex items-center gap-2">
+   132→   132→              <span className="text-[13px] font-bold text-gray-900">Five-Plane Coherence Pipeline</span>
+   133→   133→              <Badge variant="outline" className="text-[10px] font-medium px-1.5 py-0">5-plane C(t)</Badge>
+   134→   134→            </div>
+   135→   135→            <p className="text-[10px] text-gray-400 mt-0.5">Master Equation: C(t) = α·Φ + β·M + γ·Σ + δ·K + ε·A → compared against Θ(t)</p>
+   136→   136→          </div>
+   137→   137→          <div className="text-right">
+   138→   138→            <div className="flex items-center gap-1.5">
+   139→   139→              <PulsingDot color={passing ? "bg-emerald-500" : "bg-red-500"} />
+   140→   140→              <span className={`text-[11px] font-semibold ${passing ? "text-emerald-600" : "text-red-600"}`}>
+   141→   141→                {passing ? "COHERENT" : "SILENCE"}
+   142→   142→              </span>
+   143→   143→            </div>
+   144→   144→          </div>
+   145→   145→        </div>
+   146→   146→        <div className="flex items-center gap-1.5">
+   147→   147→          {planes.map((plane, i) => (
+   148→   148→            <React.Fragment key={plane.symbol}>
+   149→   149→              <div className={`flex-1 rounded-lg p-2.5 border transition-all duration-300 ${
+   150→   150→                plane.status === "active" ? "border-emerald-200 bg-emerald-50/50" : "border-gray-200 bg-gray-50/50"
+   151→   151→              }`}>
+   152→   152→                <div className="flex items-center justify-between mb-1.5">
+   153→   153→                  <div className="flex items-center gap-1.5">
+   154→   154→                    <span className="text-[10px] font-bold text-gray-400">α/β/γ/δ/ε</span>
+   155→   155→                    <span className="text-[10px] text-gray-300">=</span>
+   156→   156→                    <span className="text-[10px] font-bold" style={{ color: plane.color }}>{plane.weight.toFixed(2)}</span>
+   157→   157→                  </div>
+   158→   158→                  {plane.status === "bootstrap" && (
+   159→   159→                    <Badge className="text-[8px] px-1 py-0 bg-amber-100 text-amber-700 border-0 font-medium">BOOTSTRAP</Badge>
+   160→   160→                  )}
+   161→   161→                </div>
+   162→   162→                <div className="flex items-center gap-2">
+   163→   163→                  <div className="w-7 h-7 rounded-md flex items-center justify-center text-white text-[11px] font-bold" style={{ backgroundColor: plane.color }}>
+   164→   164→                    {plane.symbol}
+   165→   165→                  </div>
+   166→   166→                  <div className="flex-1 min-w-0">
+   167→   167→                    <p className="text-[11px] font-semibold text-gray-800 truncate">{plane.name}</p>
+   168→   168→                    <p className="text-[9px] text-gray-400 truncate">{plane.description}</p>
+   169→   169→                  </div>
+   170→   170→                  <span className="text-[14px] font-bold tabular-nums" style={{ color: plane.color }}>
+   171→   171→                    {plane.score.toFixed(3)}
+   172→   172→                  </span>
+   173→   173→                </div>
+   174→   174→                <Progress value={plane.score * 100} className="h-1 mt-1.5" style={{ ["--progress-color" as string]: plane.color }} />
+   175→   175→              </div>
+   176→   176→              {i < planes.length - 1 && <ChevronRight className="w-3.5 h-3.5 text-gray-300 flex-shrink-0" />}
+   177→   177→            </React.Fragment>
+   178→   178→          ))}
+   179→   179→        </div>
+   180→   180→        <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-gray-100">
+   181→   181→          <div className="flex items-center gap-4 text-[10px] text-gray-400">
+   182→   182→            <span>C(t) = <span className="font-bold text-gray-700">{coherence.toFixed(3)}</span></span>
+   183→   183→            <span>Θ(t) = <span className="font-bold text-gray-700">{threshold.toFixed(3)}</span></span>
+   184→   184→            <span>Margin = <span className={`font-bold ${passing ? "text-emerald-600" : "text-red-600"}`}>{(coherence - threshold).toFixed(3)}</span></span>
+   185→   185→          </div>
+   186→   186→          <span className="text-[10px] text-gray-400">Dynamic threshold · 84 whitepaper formulas</span>
+   187→   187→        </div>
+   188→   188→      </CardContent>
+   189→   189→    </Card>
+   190→   190→  );
+   191→   191→}
+   192→   192→
+   193→   193→// ─── Signal Row ──────────────────────────────────────────────────
+   194→   194→function SignalRow({ signal, index }: { signal: SignalEntry; index: number }) {
+   195→   195→  const statusStyles: Record<string, string> = {
+   196→   196→    COHERENT: "bg-emerald-50 text-emerald-700 border-emerald-200",
+   197→   197→    SILENCE: "bg-red-50 text-red-700 border-red-200",
+   198→   198→    MANIPULATION_ALERT: "bg-amber-50 text-amber-700 border-amber-200",
+   199→   199→    GENESIS: "bg-blue-50 text-blue-700 border-blue-200",
+   200→   200→    TRAJECTORY_ANOMALY: "bg-purple-50 text-purple-700 border-purple-200",
+   201→   201→    RESURRECTION: "bg-cyan-50 text-cyan-700 border-cyan-200",
+   202→   202→    FORK_DIVERGENCE: "bg-orange-50 text-orange-700 border-orange-200",
+   203→   203→    LIQUIDITY_HEALTH: "bg-teal-50 text-teal-700 border-teal-200",
+   204→   204→    CROSS_CHAIN_COHERENCE: "bg-indigo-50 text-indigo-700 border-indigo-200",
+   205→   205→  };
+   206→   206→  return (
+   207→   207→    <motion.tr
+   208→   208→      initial={{ opacity: 0, y: 4 }}
+   209→   209→      animate={{ opacity: 1, y: 0 }}
+   210→   210→      transition={{ duration: 0.2, delay: index * 0.02 }}
+   211→   211→      className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors"
+   212→   212→    >
+   213→   213→      <td className="py-2 px-3 text-[11px] font-mono text-gray-400 tabular-nums">{signal.time}</td>
+   214→   214→      <td className="py-2 px-3">
+   215→   215→        <div className="flex items-center gap-1.5">
+   216→   216→          <div className="w-5 h-5 rounded flex items-center justify-center text-[8px] font-bold text-white" style={{ backgroundColor: signal.chainColor }}>
+   217→   217→            {signal.entityShort.slice(2, 4).toUpperCase()}
+   218→   218→          </div>
+   219→   219→          <span className="text-[11px] font-mono text-gray-700">{signal.entityShort}</span>
+   220→   220→        </div>
+   221→   221→      </td>
+   222→   222→      <td className="py-2 px-3">
+   223→   223→        <div className="flex items-center gap-1.5">
+   224→   224→          <StatusDot status="online" />
+   225→   225→          <span className="text-[11px] text-gray-600">{signal.chain}</span>
+   226→   226→        </div>
+   227→   227→      </td>
+   228→   228→      <td className="py-2 px-3 text-[11px] text-gray-600">{signal.signalType.replace(/_/g, " ")}</td>
+   229→   229→      <td className="py-2 px-3">
+   230→   230→        <span className={`text-[12px] font-bold tabular-nums ${signal.coherence >= signal.threshold ? "text-emerald-600" : "text-red-600"}`}>
+   231→   231→          {signal.coherence.toFixed(3)}
+   232→   232→        </span>
+   233→   233→      </td>
+   234→   234→      <td className="py-2 px-3 text-[11px] text-gray-400 tabular-nums">{signal.threshold.toFixed(3)}</td>
+   235→   235→      <td className="py-2 px-3">
+   236→   236→        <Badge className={`text-[9px] px-1.5 py-0 border font-medium ${statusStyles[signal.status] || "bg-gray-50 text-gray-600 border-gray-200"}`}>
+   237→   237→          {signal.status === "COHERENT" ? "200 OK" : signal.status}
+   238→   238→        </Badge>
+   239→   239→      </td>
+   240→   240→    </motion.tr>
+   241→   241→  );
+   242→   242→}
+   243→   243→
+   244→   244→// ─── Chain Row ──────────────────────────────────────────────────
+   245→   245→function ChainRow({ chain }: { chain: ChainInfo }) {
+   246→   246→  return (
+   247→   247→    <div className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50/50 rounded-lg transition-colors">
+   248→   248→      <div className="w-7 h-7 rounded-lg flex items-center justify-center text-[12px]" style={{ backgroundColor: chain.color + "15", color: chain.color }}>
+   249→   249→        {chain.icon}
+   250→   250→      </div>
+   251→   251→      <div className="flex-1 min-w-0">
+   252→   252→        <div className="flex items-center gap-1.5">
+   253→   253→          <span className="text-[12px] font-semibold text-gray-800 truncate">{chain.name}</span>
+   254→   254→          <Badge className="text-[8px] px-1 py-0 bg-gray-100 text-gray-500 border-0 font-mono">{chain.vm}</Badge>
+   255→   255→        </div>
+   256→   256→        <div className="flex items-center gap-2 mt-0.5">
+   257→   257→          <StatusDot status={chain.status} />
+   258→   258→          <span className="text-[10px] text-gray-400">{chain.latency}</span>
+   259→   259→          <span className="text-[10px] text-gray-300">·</span>
+   260→   260→          <span className="text-[10px] text-gray-400">#{(chain.blockHeight / 1000000).toFixed(1)}M</span>
+   261→   261→        </div>
+   262→   262→      </div>
+   263→   263→      <div className="text-right">
+   264→   264→        <p className="text-[11px] font-semibold text-gray-700 tabular-nums">{(chain.bhCount / 1000).toFixed(0)}K</p>
+   265→   265→        <p className="text-[9px] text-gray-400">BH records</p>
+   266→   266→      </div>
+   267→   267→    </div>
+   268→   268→  );
+   269→   269→}
+   270→   270→
+   271→   271→// ─── Pages ───────────────────────────────────────────────────────
+   272→   272→
+   273→   273→function OverviewPage() {
+   274→   274→  const [signals, setSignals] = useState(LIVE_SIGNALS);
+   275→   275→  const [coherence, setCoherence] = useState(0.847);
+   276→   276→  const [threshold, setThreshold] = useState(0.673);
+   277→   277→
+   278→   278→  useEffect(() => {
+   279→   279→    const interval = setInterval(() => {
+   280→   280→      setSignals(prev => {
+   281→   281→        const newSig = { ...prev[0], id: `SIG-${Date.now().toString().slice(-6)}`, time: new Date().toTimeString().split(" ")[0], coherence: 0.6 + Math.random() * 0.35, chain: CHAINS[Math.floor(Math.random() * 10)].name, chainColor: CHAINS[Math.floor(Math.random() * 10)].color };
+   282→   282→        return [newSig, ...prev.slice(0, 49)];
+   283→   283→      });
+   284→   284→      setCoherence(0.80 + Math.random() * 0.12);
+   285→   285→      setThreshold(0.55 + Math.random() * 0.15);
+   286→   286→    }, 3000);
+   287→   287→    return () => clearInterval(interval);
+   288→   288→  }, []);
+   289→   289→
+   290→   290→  return (
+   291→   291→    <div className="space-y-4">
+   292→   292→      {/* KPI Cards */}
+   293→   293→      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+   294→   294→        <KpiCard label="Signals Published" value="51,904" change="13.6% vs yesterday" changeType="up" subtitle="across 87 chains" accentColor="#111827" sparkData={[30, 35, 28, 42, 38, 45, 50, 48, 55, 51, 58, 62]} />
+   295→   295→        <KpiCard label="Vectors Indexed" value="2.4M" change="128-dim FAISS · 64 archetypes" changeType="purple" subtitle="Akashic Index depth" accentColor="#7C3AED" sparkData={[1.8, 1.9, 2.0, 2.1, 2.0, 2.2, 2.3, 2.4, 2.3, 2.5, 2.4, 2.6]} />
+   296→   296→        <KpiCard label="Chains Active" value="87 / 100" change="all online, 13 bootstrapping" changeType="up" subtitle="15 VM families indexed" accentColor="#111827" sparkData={[70, 72, 75, 78, 80, 82, 84, 85, 86, 87, 87, 87]} />
+   297→   297→        <KpiCard label="Attacks Intercepted" value="1,381" change="0 dropped, avg 0ms switch" changeType="amber" subtitle="CRISPR · 7 signature patterns" accentColor="#D97706" sparkData={[20, 25, 22, 30, 28, 35, 40, 38, 42, 45, 43, 48]} />
+   298→   298→        <KpiCard label="System Coherence" value={coherence.toFixed(3)} change={`Θ = ${threshold.toFixed(3)} · margin ${(coherence - threshold).toFixed(3)}`} changeType="up" subtitle="C(t) ≥ Θ(t) → emitting" accentColor="#059669" sparkData={[0.78, 0.82, 0.80, 0.85, 0.83, 0.87, 0.84, 0.86, 0.89, 0.85, 0.87, 0.91]} />
+   299→   299→      </div>
+   300→   300→
+   301→   301→      {/* Five-Plane Pipeline */}
+   302→   302→      <CoherencePipeline planes={PLANE_STATUSES} coherence={coherence} threshold={threshold} />
+   303→   303→
+   304→   304→      {/* Live Signals Table + Chains Panel */}
+   305→   305→      <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
+   306→   306→        {/* Live Signals */}
+   307→   307→        <Card className="xl:col-span-3 border-0 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+   308→   308→          <CardHeader className="pb-2 px-4 pt-3">
+   309→   309→            <div className="flex items-center justify-between">
+   310→   310→              <div>
+   311→   311→                <div className="flex items-center gap-2">
+   312→   312→                  <CardTitle className="text-[14px] font-bold">Live Signals</CardTitle>
+   313→   313→                  <span className="text-[10px] text-gray-400 italic">streaming from 87 chains</span>
+   314→   314→                </div>
+   315→   315→              </div>
+   316→   316→              <div className="flex items-center gap-2">
+   317→   317→                <PulsingDot />
+   318→   318→                <span className="text-[10px] font-semibold text-emerald-600">real-time</span>
+   319→   319→              </div>
+   320→   320→            </div>
+   321→   321→          </CardHeader>
+   322→   322→          <CardContent className="px-0 pb-0">
+   323→   323→            <div className="overflow-x-auto">
+   324→   324→              <table className="w-full">
+   325→   325→                <thead>
+   326→   326→                  <tr className="border-b border-gray-100">
+   327→   327→                    {["TIME", "ENTITY", "CHAIN", "SIGNAL", "C(t)", "Θ(t)", "STATUS"].map(h => (
+   328→   328→                      <th key={h} className="py-1.5 px-3 text-left text-[9px] font-semibold uppercase tracking-wider text-gray-400">{h}</th>
+   329→   329→                    ))}
+   330→   330→                  </tr>
+   331→   331→                </thead>
+   332→   332→                <tbody>
+   333→   333→                  {signals.slice(0, 12).map((sig, i) => <SignalRow key={sig.id + i} signal={sig} index={i} />)}
+   334→   334→                </tbody>
+   335→   335→              </table>
+   336→   336→            </div>
+   337→   337→          </CardContent>
+   338→   338→        </Card>
+   339→   339→
+   340→   340→        {/* Chains Panel */}
+   341→   341→        <Card className="xl:col-span-2 border-0 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+   342→   342→          <CardHeader className="pb-2 px-4 pt-3">
+   343→   343→            <div className="flex items-center justify-between">
+   344→   344→              <CardTitle className="text-[14px] font-bold">Chains</CardTitle>
+   345→   345→              <Badge className="text-[9px] px-1.5 py-0 bg-emerald-50 text-emerald-700 border-emerald-200 font-medium">87 ACTIVE</Badge>
+   346→   346→            </div>
+   347→   347→          </CardHeader>
+   348→   348→          <CardContent className="px-2 pb-3">
+   349→   349→            <ScrollArea className="h-[420px]">
+   350→   350→              <div className="space-y-0.5">
+   351→   351→                {CHAINS.map(chain => <ChainRow key={chain.id} chain={chain} />)}
+   352→   352→              </div>
+   353→   353→            </ScrollArea>
+   354→   354→            <div className="mt-2 pt-2 border-t border-gray-100 text-center">
+   355→   355→              <button className="text-[11px] font-medium text-blue-600 hover:text-blue-700">+ 77 more chains</button>
+   356→   356→              <span className="text-[10px] text-gray-400 ml-1">100 total connected</span>
+   357→   357→            </div>
+   358→   358→          </CardContent>
+   359→   359→        </Card>
+   360→   360→      </div>
+   361→   361→    </div>
+   362→   362→  );
+   363→   363→}
+   364→   364→
+   365→   365→function SignalsPage() {
+   366→   366→  const [signals] = useState(LIVE_SIGNALS);
+   367→   367→  const [filter, setFilter] = useState("ALL");
+   368→   368→  const filtered = filter === "ALL" ? signals : signals.filter(s => s.status === filter);
+   369→   369→  const types = ["ALL", "COHERENT", "SILENCE", "MANIPULATION_ALERT", "GENESIS"];
+   370→   370→  return (
+   371→   371→    <div className="space-y-4">
+   372→   372→      <div className="flex items-center gap-2 flex-wrap">
+   373→   373→        {types.map(t => (
+   374→   374→          <button key={t} onClick={() => setFilter(t)} className={`text-[10px] font-semibold px-2.5 py-1 rounded-full border transition-all ${filter === t ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-600 border-gray-200 hover:border-gray-300"}`}>
+   375→   375→            {t.replace(/_/g, " ")} {t !== "ALL" && <span className="ml-1 text-gray-400">({signals.filter(s => s.status === t).length})</span>}
+   376→   376→          </button>
+   377→   377→        ))}
+   378→   378→      </div>
+   379→   379→      <Card className="border-0 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+   380→   380→        <CardContent className="p-0">
+   381→   381→          <table className="w-full">
+   382→   382→            <thead>
+   383→   383→              <tr className="border-b border-gray-100">
+   384→   384→                {["TIME", "ENTITY", "CHAIN", "SIGNAL TYPE", "C(t)", "Θ(t)", "Φ", "M", "Σ", "K", "A", "MF", "LIMITING", "STATUS"].map(h => (
+   385→   385→                  <th key={h} className="py-2 px-3 text-left text-[9px] font-semibold uppercase tracking-wider text-gray-400 whitespace-nowrap">{h}</th>
+   386→   386→                ))}
+   387→   387→              </tr>
+   388→   388→            </thead>
+   389→   389→            <tbody>
+   390→   390→              {filtered.slice(0, 25).map((sig, i) => (
+   391→   391→                <tr key={sig.id + i} className="border-b border-gray-50 hover:bg-gray-50/50">
+   392→   392→                  <td className="py-2 px-3 text-[11px] font-mono text-gray-400 tabular-nums">{sig.time}</td>
+   393→   393→                  <td className="py-2 px-3 text-[11px] font-mono text-gray-700">{sig.entity}</td>
+   394→   394→                  <td className="py-2 px-3"><div className="flex items-center gap-1.5"><StatusDot status="online" /><span className="text-[11px] text-gray-600">{sig.chain}</span></div></td>
+   395→   395→                  <td className="py-2 px-3 text-[11px] text-gray-600">{sig.signalType}</td>
+   396→   396→                  <td className={`py-2 px-3 text-[11px] font-bold tabular-nums ${sig.coherence >= sig.threshold ? "text-emerald-600" : "text-red-600"}`}>{sig.coherence.toFixed(3)}</td>
+   397→   397→                  <td className="py-2 px-3 text-[11px] text-gray-400 tabular-nums">{sig.threshold.toFixed(3)}</td>
+   398→   398→                  <td className="py-2 px-3 text-[11px] tabular-nums text-blue-600">{sig.phi.toFixed(3)}</td>
+   399→   399→                  <td className="py-2 px-3 text-[11px] tabular-nums text-purple-600">{sig.mental.toFixed(3)}</td>
+   400→   400→                  <td className="py-2 px-3 text-[11px] tabular-nums text-emerald-600">{sig.sigma.toFixed(3)}</td>
+   401→   401→                  <td className="py-2 px-3 text-[11px] tabular-nums text-amber-600">{sig.anima.toFixed(3)}</td>
+   402→   402→                  <td className="py-2 px-3 text-[11px] tabular-nums text-pink-600">{sig.anima.toFixed(3)}</td>
+   403→   403→                  <td className="py-2 px-3 text-[11px] tabular-nums">{sig.mfScore.toFixed(2)}</td>
+   404→   404→                  <td className="py-2 px-3 text-[10px] text-gray-500">{sig.limitingPlane}</td>
+   405→   405→                  <td className="py-2 px-3"><Badge className={`text-[9px] px-1.5 py-0 border font-medium ${sig.status === "COHERENT" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-red-50 text-red-700 border-red-200"}`}>{sig.status}</Badge></td>
+   406→   406→                </tr>
+   407→   407→              ))}
+   408→   408→            </tbody>
+   409→   409→          </table>
+   410→   410→        </CardContent>
+   411→   411→      </Card>
+   412→   412→    </div>
+   413→   413→  );
+   414→   414→}
+   415→   415→
+   416→   416→function ChainsPage() {
+   417→   417→  return (
+   418→   418→    <div className="space-y-4">
+   419→   419→      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+   420→   420→        {VM_FAMILIES.map(vm => (
+   421→   421→          <Card key={vm.name} className="border-0 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+   422→   422→            <CardContent className="p-3">
+   423→   423→              <div className="flex items-center gap-2 mb-2">
+   424→   424→                <div className="w-6 h-6 rounded" style={{ backgroundColor: vm.color + "20" }} />
+   425→   425→                <span className="text-[11px] font-bold text-gray-800">{vm.name}</span>
+   426→   426→              </div>
+   427→   427→              <div className="flex items-center justify-between">
+   428→   428→                <span className="text-[20px] font-bold text-gray-900">{vm.chains}</span>
+   429→   429→                <StatusDot status="online" />
+   430→   430→              </div>
+   431→   431→              <p className="text-[9px] text-gray-400 mt-1">chains indexed</p>
+   432→   432→            </CardContent>
+   433→   433→          </Card>
+   434→   434→        ))}
+   435→   435→      </div>
+   436→   436→      <Card className="border-0 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+   437→   437→        <CardHeader className="pb-2 px-4 pt-3"><CardTitle className="text-[14px] font-bold">All Chains</CardTitle></CardHeader>
+   438→   438→        <CardContent className="px-2 pb-3">
+   439→   439→          <ScrollArea className="h-[500px]">
+   440→   440→            <div className="space-y-0.5">
+   441→   441→              {CHAINS.map(chain => <ChainRow key={chain.id} chain={chain} />)}
+   442→   442→            </div>
+   443→   443→          </ScrollArea>
+   444→   444→        </CardContent>
+   445→   445→      </Card>
+   446→   446→    </div>
+   447→   447→  );
+   448→   448→}
+   449→   449→
+   450→   450→function AkashicPage() {
+   451→   451→  return (
+   452→   452→    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+   453→   453→      {[
+   454→   454→        { label: "Total Vectors", value: "2,418,923", sub: "128-dim FAISS IndexFlatL2", icon: Database, color: "#3B82F6" },
+   455→   455→        { label: "Entity Records", value: "142,307", sub: "BEO clusters · 75% confidence", icon: Users, color: "#8B5CF6" },
+   456→   456→        { label: "Archetypes", value: "64", sub: "K-means centroids · cosine", icon: Layers, color: "#10B981" },
+   457→   457→        { label: "Akashic Depth", value: "D ≥ 10K", sub: "exponential recency weighting", icon: Hash, color: "#F59E0B" },
+   458→   458→        { label: "BH Ledger", value: "4.8M", sub: "93-byte canonical dual-strand", icon: Fingerprint, color: "#EC4899" },
+   459→   459→        { label: "0G Storage", value: "892 syncs", sub: "Merkle-256 provenance", icon: Globe2, color: "#06B6D4" },
+   460→   460→        { label: "DA Blobs", value: "12,847", sub: "Reed-Solomon 2x erasure coding", icon: Binary, color: "#7C3AED" },
+   461→   461→        { label: "KV Streams", value: "4 active", sub: "sub-10ms hot cache", icon: CircuitBoard, color: "#059669" },
+   462→   462→      ].map(item => (
+   463→   463→        <Card key={item.label} className="border-0 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+   464→   464→          <CardContent className="p-4">
+   465→   465→            <div className="flex items-center gap-2 mb-3">
+   466→   466→              <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ backgroundColor: item.color + "12" }}>
+   467→   467→                <item.icon className="w-4 h-4" style={{ color: item.color }} />
+   468→   468→              </div>
+   469→   469→              <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">{item.label}</span>
+   470→   470→            </div>
+   471→   471→            <p className="text-[22px] font-bold text-gray-900">{item.value}</p>
+   472→   472→            <p className="text-[10px] text-gray-400 mt-1">{item.sub}</p>
+   473→   473→          </CardContent>
+   474→   474→        </Card>
+   475→   475→      ))}
+   476→   476→      <Card className="md:col-span-2 xl:col-span-4 border-0 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+   477→   477→        <CardHeader className="pb-2 px-4 pt-3"><CardTitle className="text-[14px] font-bold">64 Behavioral Archetypes</CardTitle></CardHeader>
+   478→   478→        <CardContent className="px-4 pb-3">
+   479→   479→          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+   480→   480→            {ARCHETYPES.map(a => (
+   481→   481→              <div key={a.id} className="flex items-center gap-2 p-2 rounded-lg bg-gray-50">
+   482→   482→                <div className="w-2 h-8 rounded-full" style={{ backgroundColor: a.color }} />
+   483→   483→                <div>
+   484→   484→                  <p className="text-[11px] font-semibold text-gray-800">{a.name}</p>
+   485→   485→                  <div className="flex items-center gap-1.5">
+   486→   486→                    <Badge className={`text-[8px] px-1 py-0 border-0 font-medium ${a.risk === "SAFE" ? "bg-emerald-100 text-emerald-700" : a.risk === "CRITICAL" ? "bg-red-100 text-red-700" : a.risk === "DANGER" ? "bg-orange-100 text-orange-700" : "bg-amber-100 text-amber-700"}`}>{a.risk}</Badge>
+   487→   487→                    <span className="text-[9px] text-gray-400">{a.count.toLocaleString()} entities</span>
+   488→   488→                  </div>
+   489→   489→                </div>
+   490→   490→              </div>
+   491→   491→            ))}
+   492→   492→          </div>
+   493→   493→        </CardContent>
+   494→   494→      </Card>
+   495→   495→    </div>
+   496→   496→  );
+   497→   497→}
+   498→   498→
+   499→   499→function PlanesPage() {
+   500→   500→  return (
+   501→   501→    <div className="space-y-4">
+   502→   502→      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
+   503→   503→        {PLANE_STATUSES.map(p => (
+   504→   504→          <Card key={p.symbol} className="border-0 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+   505→   505→            <CardContent className="p-4">
+   506→   506→              <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white text-[16px] font-bold mb-3" style={{ backgroundColor: p.color }}>{p.symbol}</div>
+   507→   507→              <p className="text-[13px] font-bold text-gray-900">{p.name} Plane</p>
+   508→   508→              <p className="text-[10px] text-gray-400 mt-0.5 mb-3">{p.description}</p>
+   509→   509→              <div className="flex items-center justify-between mb-1.5">
+   510→   510→                <span className="text-[24px] font-bold" style={{ color: p.color }}>{p.score.toFixed(3)}</span>
+   511→   511→                <Badge className={`text-[8px] px-1.5 py-0 border-0 font-medium ${p.status === "active" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{p.status === "active" ? "ACTIVE" : "BOOTSTRAP"}</Badge>
+   512→   512→              </div>
+   513→   513→              <p className="text-[10px] text-gray-400">Weight: α/β/γ/δ/ε = {p.weight.toFixed(2)}</p>
+   514→   514→              <Progress value={p.score * 100} className="h-1.5 mt-2" style={{ ["--progress-color" as string]: p.color }} />
+   515→   515→            </CardContent>
+   516→   516→          </Card>
+   517→   517→        ))}
+   518→   518→      </div>
+   519→   519→      <Card className="border-0 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+   520→   520→        <CardContent className="p-4">
+   521→   521→          <h3 className="text-[13px] font-bold text-gray-900 mb-3">Master Equation Breakdown</h3>
+   522→   522→          <div className="font-mono text-[11px] bg-gray-900 text-emerald-400 rounded-lg p-4 leading-relaxed">
+   523→   523→            <p><span className="text-gray-500">// TRION Master Equation — Whitepaper §11</span></p>
+   524→   524→            <p>C(t) = <span className="text-blue-400">α·Φ_adj(0.842)</span> + <span className="text-purple-400">β·M_adj(0.791)</span> + <span className="text-emerald-400">γ·Σ(0.724)</span> + <span className="text-amber-400">δ·K(0.100)</span> + <span className="text-pink-400">ε·A(0.100)</span></p>
+   525→   525→            <p>C(t) = <span className="text-white">0.25×0.842 + 0.30×0.791 + 0.25×0.724 + 0.10×0.100 + 0.10×0.100</span></p>
+   526→   526→            <p>C(t) = <span className="text-white font-bold">0.2105 + 0.2373 + 0.1810 + 0.0100 + 0.0100 = 0.6488</span></p>
+   527→   527→            <p className="mt-1"><span className="text-gray-500">// Economic Moat (6-factor multiplicative)</span></p>
+   528→   528→            <p>M_moat = D(t)×Q(t)×R(t)×X(t)×F(t)×N(t) = <span className="text-cyan-400">0.847</span></p>
+   529→   529→            <p className="mt-1"><span className="text-gray-500">// Final Output</span></p>
+   530→   530→            <p>T(t) = [C(t) ≥ Θ(t)] · C(t) · e^M_moat = <span className="text-emerald-400 font-bold">COHERENT · 0.649 · 1.847</span></p>
+   531→   531→          </div>
+   532→   532→        </CardContent>
+   533→   533→      </Card>
+   534→   534→    </div>
+   535→   535→  );
+   536→   536→}
+   537→   537→
+   538→   538→function SecurityPage() {
+   539→   539→  return (
+   540→   540→    <div className="space-y-4">
+   541→   541→      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+   542→   542→        {[
+   543→   543→          { label: "Living Security Score", value: "SEC(t) = 0.94", sub: "LSS × PQC × CC", color: "#059669" },
+   544→   544→          { label: "Genomic Key Evolution", value: "GK #482,191", sub: "SHA3-256 hash chain", color: "#3B82F6" },
+   545→   545→          { label: "CRISPR Intercepts", value: "1,381 total", sub: "7 attack signatures active", color: "#DC2626" },
+   546→   546→          { label: "PQC Layer", value: "ML-DSA-87", sub: "CRYSTALS-Dilithium active", color: "#7C3AED" },
+   547→   547→        ].map(item => (
+   548→   548→          <Card key={item.label} className="border-0 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+   549→   549→            <CardContent className="p-4">
+   550→   550→              <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">{item.label}</p>
+   551→   551→              <p className="text-[18px] font-bold mt-1" style={{ color: item.color }}>{item.value}</p>
+   552→   552→              <p className="text-[10px] text-gray-400 mt-0.5">{item.sub}</p>
+   553→   553→            </CardContent>
+   554→   554→          </Card>
+   555→   555→        ))}
+   556→   556→      </div>
+   557→   557→      <Card className="border-0 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+   558→   558→        <CardHeader className="pb-2 px-4 pt-3"><CardTitle className="text-[14px] font-bold">CRISPR Attack Signatures</CardTitle></CardHeader>
+   559→   559→        <CardContent className="px-4 pb-3">
+   560→   560→          <div className="space-y-2">
+   561→   561→            {CRISPR_SIGNATURES.map(sig => (
+   562→   562→              <div key={sig.name} className="flex items-center gap-3 p-2.5 rounded-lg bg-gray-50">
+   563→   563→                <div className={`w-2 h-8 rounded-full ${sig.severity === "critical" ? "bg-red-500" : "bg-amber-500"}`} />
+   564→   564→                <div className="flex-1">
+   565→   565→                  <div className="flex items-center gap-2">
+   566→   566→                    <span className="text-[12px] font-bold text-gray-800 font-mono">{sig.name}</span>
+   567→   567→                    <Badge className={`text-[8px] px-1.5 py-0 border-0 font-medium uppercase ${sig.severity === "critical" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>{sig.severity}</Badge>
+   568→   568→                  </div>
+   569→   569→                  <p className="text-[10px] text-gray-400">{sig.description}</p>
+   570→   570→                </div>
+   571→   571→                <span className="text-[12px] font-bold tabular-nums text-gray-700">{sig.matches}</span>
+   572→   572→                <span className="text-[9px] text-gray-400">matches</span>
+   573→   573→              </div>
+   574→   574→            ))}
+   575→   575→          </div>
+   576→   576→        </CardContent>
+   577→   577→      </Card>
+   578→   578→    </div>
+   579→   579→  );
+   580→   580→}
+   581→   581→
+   582→   582→function RelayersPage() {
+   583→   583→  return (
+   584→   584→    <div className="space-y-4">
+   585→   585→      {RELAYER_STATUS.map(r => (
+   586→   586→        <Card key={r.name} className="border-0 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+   587→   587→          <CardContent className="p-4">
+   588→   588→            <div className="flex items-center justify-between">
+   589→   589→              <div className="flex items-center gap-3">
+   590→   590→                <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center">
+   591→   591→                  <Wifi className="w-5 h-5 text-blue-600" />
+   592→   592→                </div>
+   593→   593→                <div>
+   594→   594→                  <p className="text-[14px] font-bold text-gray-900">{r.name}</p>
+   595→   595→                  <div className="flex items-center gap-3 mt-0.5">
+   596→   596→                    <span className="text-[10px] text-gray-400">{r.chains} chains</span>
+   597→   597→                    <PulsingDot />
+   598→   598→                    <span className="text-[10px] font-semibold text-emerald-600">{r.status}</span>
+   599→   599→                    <span className="text-[10px] text-gray-400">Last: {r.lastTx}</span>
+   600→   600→                  </div>
+   601→   601→                </div>
+   602→   602→              </div>
+   603→   603→              <div className="text-right">
+   604→   604→                <p className="text-[18px] font-bold text-gray-900">{typeof r.signalsPublished !== "undefined" ? r.signalsPublished.toLocaleString() : r.blobs?.toLocaleString() || r.syncs?.toLocaleString()}</p>
+   605→   605→                <p className="text-[10px] text-gray-400">{typeof r.signalsPublished !== "undefined" ? "signals published" : r.daSize || "syncs completed"}</p>
+   606→   606→              </div>
+   607→   607→            </div>
+   608→   608→          </CardContent>
+   609→   609→        </Card>
+   610→   610→      ))}
+   611→   611→    </div>
+   612→   612→  );
+   613→   613→}
+   614→   614→
+   615→   615→function GovernancePage() {
+   616→   616→  return (
+   617→   617→    <div className="space-y-4">
+   618→   618→      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+   619→   619→        {[
+   620→   620→          { label: "Active Proposals", value: "3", sub: "2 voting · 1 queued" },
+   621→   621→          { label: "AWA Status", value: "3/4 MET", sub: "validators, diversity, audit" },
+   622→   622→          { label: "Validator HHI", value: "1,247", sub: "HEALTHY · 4 continents" },
+   623→   623→          { label: "Total Staked", value: "847K TRION", sub: "23 active validators" },
+   624→   624→        ].map(item => (
+   625→   625→          <Card key={item.label} className="border-0 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+   626→   626→            <CardContent className="p-4">
+   627→   627→              <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">{item.label}</p>
+   628→   628→              <p className="text-[20px] font-bold text-gray-900 mt-1">{item.value}</p>
+   629→   629→              <p className="text-[10px] text-gray-400 mt-0.5">{item.sub}</p>
+   630→   630→            </CardContent>
+   631→   631→          </Card>
+   632→   632→        ))}
+   633→   633→      </div>
+   634→   634→      <Card className="border-0 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+   635→   635→        <CardHeader className="pb-2 px-4 pt-3"><CardTitle className="text-[14px] font-bold">Governance Proposals</CardTitle></CardHeader>
+   636→   636→        <CardContent className="px-4 pb-3">
+   637→   637→          <div className="space-y-2">
+   638→   638→            {GOVERNANCE_ITEMS.map(g => (
+   639→   639→              <div key={g.id} className="flex items-center gap-3 p-3 rounded-lg bg-gray-50">
+   640→   640→                <div className="flex-1 min-w-0">
+   641→   641→                  <div className="flex items-center gap-2">
+   642→   642→                    <span className="text-[10px] font-mono text-gray-400">{g.id}</span>
+   643→   643→                    <Badge className={`text-[8px] px-1.5 py-0 border font-medium ${g.status === "active" ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-gray-100 text-gray-600 border-gray-200"}`}>{g.status}</Badge>
+   644→   644→                    <Badge className="text-[8px] px-1.5 py-0 bg-gray-100 text-gray-600 border-gray-200 font-mono">{g.type}</Badge>
+   645→   645→                  </div>
+   646→   646→                  <p className="text-[12px] font-semibold text-gray-800 mt-1">{g.title}</p>
+   647→   647→                </div>
+   648→   648→                <div className="text-right flex-shrink-0">
+   649→   649→                  <p className="text-[12px] font-bold tabular-nums text-gray-700">{(g.votes / 1000).toFixed(1)}K</p>
+   650→   650→                  <p className="text-[9px] text-gray-400">{g.timeLeft}</p>
+   651→   651→                </div>
+   652→   652→              </div>
+   653→   653→            ))}
+   654→   654→          </div>
+   655→   655→        </CardContent>
+   656→   656→      </Card>
+   657→   657→      <Card className="border-0 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+   658→   658→        <CardHeader className="pb-2 px-4 pt-3"><CardTitle className="text-[14px] font-bold">Falsifiability Registry (F1–F15)</CardTitle></CardHeader>
+   659→   659→        <CardContent className="px-4 pb-3">
+   660→   660→          <div className="space-y-1.5">
+   661→   661→            {FALSIFIABILITY.map(f => (
+   662→   662→              <div key={f.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50">
+   663→   663→                <span className="text-[10px] font-bold font-mono text-gray-500 w-6">{f.id}</span>
+   664→   664→                <div className="flex-1 min-w-0">
+   665→   665→                  <p className="text-[11px] text-gray-700 truncate">{f.description}</p>
+   666→   666→                </div>
+   667→   667→                <span className="text-[11px] font-mono font-bold tabular-nums">{f.metric}</span>
+   668→   668→                <Badge className={`text-[8px] px-1.5 py-0 border font-medium ${f.status === "PASSING" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : f.status === "MONITORING" ? "bg-amber-50 text-amber-700 border-amber-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>{f.status}</Badge>
+   669→   669→                <span className="text-[9px] text-gray-400 tabular-nums">{f.threshold}</span>
+   670→   670→              </div>
+   671→   671→            ))}
+   672→   672→          </div>
+   673→   673→        </CardContent>
+   674→   674→      </Card>
+   675→   675→    </div>
+   676→   676→  );
+   677→   677→}
+   678→   678→
+   679→   679→function DefaultPage({ title }: { title: string }) {
+   680→   680→  return (
+   681→   681→    <div className="flex flex-col items-center justify-center h-64 text-center">
+   682→   682→      <div className="w-12 h-12 rounded-xl bg-gray-100 flex items-center justify-center mb-3">
+   683→   683→        <Activity className="w-6 h-6 text-gray-400" />
+   684→   684→      </div>
+   685→   685→      <h3 className="text-[14px] font-bold text-gray-900">{title}</h3>
+   686→   686→      <p className="text-[12px] text-gray-400 mt-1">Connected to TRION Oracle API · FAISS · 0G Storage</p>
+   687→   687→      <div className="flex items-center gap-2 mt-3">
+   688→   688→        <PulsingDot />
+   689→   689→        <span className="text-[11px] font-medium text-emerald-600">Live data streaming</span>
+   690→   690→      </div>
+   691→   691→    </div>
+   692→   692→  );
+   693→   693→}
+   694→   694→
+   695→   695→// ─── Main Dashboard ─────────────────────────────────────────────
+   696→   696→export default function TrionDashboard() {
+   697→   697→  const [activePage, setActivePage] = useState("overview");
+   698→   698→  const [sidebarOpen, setSidebarOpen] = useState(true);
+   699→   699→  const [mobileOpen, setMobileOpen] = useState(false);
+   700→   700→
+   701→   701→  const renderPage = useCallback(() => {
+   702→   702→    switch (activePage) {
+   703→   703→      case "overview": return <OverviewPage />;
+   704→   704→      case "signals": return <SignalsPage />;
+   705→   705→      case "chains": return <ChainsPage />;
+   706→   706→      case "akashic": return <AkashicPage />;
+   707→   707→      case "planes": return <PlanesPage />;
+   708→   708→      case "security": return <SecurityPage />;
+   709→   709→      case "relayers": return <RelayersPage />;
+   710→   710→      case "governance": return <GovernancePage />;
+   711→   711→      default: return <DefaultPage title={NAV_ITEMS.find(n => n.id === activePage)?.label || activePage} />;
+   712→   712→    }
+   713→   713→  }, [activePage]);
+   714→   714→
+   715→   715→  return (
+   716→   716→    <div className="flex h-screen bg-[#F9FAFB] overflow-hidden">
+   717→   717→      {/* Mobile overlay */}
+   718→   718→      <AnimatePresence>
+   719→   719→        {mobileOpen && (
+   720→   720→          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/20 z-40 lg:hidden" onClick={() => setMobileOpen(false)} />
+   721→   721→        )}
+   722→   722→      </AnimatePresence>
+   723→   723→
+   724→   724→      {/* Sidebar */}
+   725→   725→      <motion.aside
+   726→   726→        initial={false}
+   727→   727→        animate={{ width: sidebarOpen ? 240 : 0 }}
+   728→   728→        className={`fixed lg:relative z-50 h-full bg-white border-r border-gray-100 flex flex-col overflow-hidden ${mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}
+   729→   729→        style={{ width: undefined }}
+   730→   730→      >
+   731→   731→        <div className="flex-1 overflow-y-auto py-4 px-3">
+   732→   732→          {/* Logo */}
+   733→   733→          <div className="px-2 mb-5">
+   734→   734→            <TrionLogo />
+   735→   735→          </div>
+   736→   736→
+   737→   737→          {/* Nav Items */}
+   738→   738→          <nav className="space-y-0.5">
+   739→   739→            {NAV_ITEMS.map(item => {
+   740→   740→              if (item.section) {
+   741→   741→                return <div key={item.id} className="pt-4 pb-1.5 px-3"><span className="text-[9px] font-bold uppercase tracking-[0.15em] text-gray-400">{item.section}</span></div>;
+   742→   742→              }
+   743→   743→              const isActive = activePage === item.id;
+   744→   744→              return (
+   745→   745→                <button
+   746→   746→                  key={item.id}
+   747→   747→                  onClick={() => { setActivePage(item.id); setMobileOpen(false); }}
+   748→   748→                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-all duration-150 group ${
+   749→   749→                    isActive ? "bg-blue-50 text-blue-700" : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+   750→   750→                  }`}
+   751→   751→                >
+   752→   752→                  <item.icon className={`w-4 h-4 flex-shrink-0 ${isActive ? "text-blue-600" : "text-gray-400 group-hover:text-gray-600"}`} />
+   753→   753→                  <span className="text-[12.5px] font-medium flex-1 truncate">{item.label}</span>
+   754→   754→                  {item.badge && (
+   755→   755→                    <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full ${item.badgeColor === "emerald" ? "bg-emerald-100 text-emerald-700" : "bg-gray-100 text-gray-600"}`}>
+   756→   756→                      {item.badge}
+   757→   757→                    </span>
+   758→   758→                  )}
+   759→   759→                </button>
+   760→   760→              );
+   761→   761→            })}
+   762→   762→          </nav>
+   763→   763→        </div>
+   764→   764→
+   765→   765→        {/* User Profile */}
+   766→   766→        <div className="border-t border-gray-100 p-3">
+   767→   767→          <div className="flex items-center gap-2.5 px-2 py-1.5">
+   768→   768→            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-cyan-500 flex items-center justify-center text-white text-[11px] font-bold flex-shrink-0">T</div>
+   769→   769→            <div className="flex-1 min-w-0">
+   770→   770→              <p className="text-[12px] font-semibold text-gray-900 truncate">TRION Protocol</p>
+   771→   771→              <p className="text-[10px] text-gray-400 truncate">CC0 · v1.0.0 · Mainnet</p>
+   772→   772→            </div>
+   773→   773→            <Badge className="text-[8px] px-1.5 py-0 bg-emerald-50 text-emerald-700 border-emerald-200 font-medium flex-shrink-0">LIVE</Badge>
+   774→   774→          </div>
+   775→   775→        </div>
+   776→   776→      </motion.aside>
+   777→   777→
+   778→   778→      {/* Main Content */}
+   779→   779→      <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
+   780→   780→        {/* Header */}
+   781→   781→        <header className="flex-shrink-0 bg-white border-b border-gray-100 px-4 lg:px-6 py-3">
+   782→   782→          <div className="flex items-center justify-between">
+   783→   783→            <div className="flex items-center gap-3">
+   784→   784→              <button onClick={() => setMobileOpen(true)} className="lg:hidden p-1.5 rounded-lg hover:bg-gray-100">
+   785→   785→                <Menu className="w-4.5 h-4.5 text-gray-600" />
+   786→   786→              </button>
+   787→   787→              <button onClick={() => setSidebarOpen(!sidebarOpen)} className="hidden lg:flex p-1.5 rounded-lg hover:bg-gray-100">
+   788→   788→                {sidebarOpen ? <X className="w-4 h-4 text-gray-400" /> : <Menu className="w-4 h-4 text-gray-400" />}
+   789→   789→              </button>
+   790→   790→              <div>
+   791→   791→                <h1 className="text-[18px] font-bold text-gray-900 capitalize leading-none">
+   792→   792→                  {NAV_ITEMS.find(n => n.id === activePage)?.label || "Overview"}
+   793→   793→                </h1>
+   794→   794→                <div className="flex items-center gap-1.5 mt-0.5">
+   795→   795→                  <PulsingDot />
+   796→   796→                  <span className="text-[10px] font-medium text-emerald-600">Production</span>
+   797→   797→                  <span className="text-[10px] text-gray-300 mx-0.5">·</span>
+   798→   798→                  <span className="text-[10px] text-gray-400">Behavioral Truth Oracle</span>
+   799→   799→                </div>
+   800→   800→              </div>
+   801→   801→            </div>
+   802→   802→            <div className="flex items-center gap-3">
+   803→   803→              <span className="text-[10px] text-gray-400 hidden sm:inline">87 chains indexed</span>
+   804→   804→              <Badge variant="outline" className="text-[10px] font-medium px-2 py-0.5 hidden sm:flex">Last 24 hours</Badge>
+   805→   805→              <button className="p-1.5 rounded-lg hover:bg-gray-100 relative">
+   806→   806→                <Bell className="w-4 h-4 text-gray-500" />
+   807→   807→                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full" />
+   808→   808→              </button>
+   809→   809→            </div>
+   810→   810→          </div>
+   811→   811→        </header>
+   812→   812→
+   813→   813→        {/* Page Content */}
+   814→   814→        <div className="flex-1 overflow-y-auto">
+   815→   815→          <div className="p-4 lg:p-6 max-w-[1600px] mx-auto w-full">
+   816→   816→            <AnimatePresence mode="wait">
+   817→   817→              <motion.div
+   818→   818→                key={activePage}
+   819→   819→                initial={{ opacity: 0, y: 8 }}
+   820→   820→                animate={{ opacity: 1, y: 0 }}
+   821→   821→                exit={{ opacity: 0, y: -8 }}
+   822→   822→                transition={{ duration: 0.2 }}
+   823→   823→              >
+   824→   824→                {renderPage()}
+   825→   825→              </motion.div>
+   826→   826→            </AnimatePresence>
+   827→   827→          </div>
+   828→   828→        </div>
+   829→   829→      </main>
+   830→   830→    </div>
+   831→   831→  );
+   832→   832→}
