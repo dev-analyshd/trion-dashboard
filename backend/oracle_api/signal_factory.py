@@ -89,6 +89,7 @@ class SignalFactory:
         th = max(0.0, min(1.0, random.gauss(0.65, 0.08)))
         status = "COHERENT" if c >= th else ("WARNING" if c >= th * 0.9 else "INTERCEPT")
         payload = f"{self.counter}:{chain['id']}:{entity['name']}:{c:.4f}"
+        route_types = ["SPLIT", "NETTING", "SINGLE_CHAIN", "PARALLEL", "MULTIHOP", "DEFERRED", "BITP"]
         return {
             "id": self.counter, "timestamp": _ts(), "chain": chain["id"], "chainName": chain["name"],
             "chainId": chain.get("chainId", 0), "currency": chain.get("currency", ""),
@@ -103,6 +104,12 @@ class SignalFactory:
             "antisense": hashlib.sha256((payload+":anti").encode()).hexdigest()[:16],
             "blockNumber": random.randint(180000000, 200000000),
             "source": source or "signal_factory",
+            "btcpRoute": random.choice(route_types),
+            "nlScore": round(max(0, min(1, random.gauss(0.82, 0.08))), 4),
+            "mfScore": round(max(0, min(1, random.gauss(0.03, 0.02))), 4),
+            "btcpScore": round(max(0, min(1, random.gauss(0.85, 0.10))), 4),
+            "genomicKeyGen": random.randint(400, 1400),
+            "epoch": f"epoch-{random.randint(1000, 9999)}",
         }
 
     def latest(self, n=50): return self.signals[-n:]

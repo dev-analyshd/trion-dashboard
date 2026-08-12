@@ -6,13 +6,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 connections = []
 _lock = threading.Lock()
+_main_loop = None
+
 
 def broadcast_signal(signal: dict):
-    """Thread-safe broadcast of a signal to all connected WebSocket clients.
-    
-    This is called from the background thread and schedules the actual
-    send on the main asyncio event loop to avoid thread-safety issues.
-    """
+    """Thread-safe broadcast of a signal to all connected WebSocket clients."""
+    global _main_loop
     if not connections:
         return
     data = json.dumps({"type": "signal", "data": signal})
@@ -20,12 +19,12 @@ def broadcast_signal(signal: dict):
         dead = []
         for ws in connections:
             try:
-                # Schedule send on the event loop
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(_safe_send(ws, data))
-                else:
+                if _main_loop is None or _main_loop.is_closed():
                     dead.append(ws)
+                    continue
+                _main_loop.call_soon_threadsafe(
+                    lambda w=ws, d=data: _main_loop.create_task(_safe_send(w, d))
+                )
             except Exception:
                 dead.append(ws)
         for ws in dead:
@@ -42,6 +41,8 @@ async def _safe_send(ws, data):
 
 @router.websocket("/ws/signals")
 async def ws_signals(ws: WebSocket):
+    global _main_loop
+    _main_loop = asyncio.get_running_loop()
     await ws.accept()
     with _lock:
         connections.append(ws)

@@ -49,6 +49,12 @@ async def lifespan(app: FastAPI):
     f = SignalFactory.get()
     f.init_crates()
     logger.info(f"[TRION] Signal Factory ready — {f.counter} pre-generated signals, crates initialized")
+    # Store event loop reference for WebSocket broadcast
+    try:
+        import oracle_api.websocket_manager as _wsm
+        _wsm._main_loop = asyncio.get_running_loop()
+    except Exception:
+        pass
     _running = True
     _background_thread = threading.Thread(target=_background_signal_loop, daemon=True)
     _background_thread.start()
@@ -86,4 +92,4 @@ async def health():
     return {"status": "healthy", "signalsGenerated": f.counter, "crates": f.get_crate_statuses()}
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=5000, log_level="info")
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv('PORT', '5001')), log_level="info")

@@ -1,11 +1,36 @@
-version: '3.8'
 services:
-  trion-backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
+  backend:
+    build: ./backend
     ports:
-      - '3000:3000'
+      - "5001:5001"
+    env_file:
+      - ./backend/.env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
     environment:
-      - NODE_ENV=production
+      - NEXT_PUBLIC_BACKEND_URL=http://backend:5001
+      - NEXT_PUBLIC_WS_URL=ws://backend:5001
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "81:80"
+    volumes:
+      - ./frontend/Caddyfile:/etc/caddy/Caddyfile
+    depends_on:
+      - backend
+      - frontend
     restart: unless-stopped

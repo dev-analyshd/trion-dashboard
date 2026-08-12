@@ -35,7 +35,7 @@ export const CHAINS = [
   { id: "polkadot", name: "Polkadot", vm: "Substrate", chainId: 0, status: "active" },
   { id: "hsk", name: "HashKey Chain", vm: "EVM", chainId: 177, status: "active" },
   { id: "zksync", name: "zkSync Era", vm: "zkEVM", chainId: 324, status: "active" },
-  { id: "mantle", name: "Mantle", vm: "EVM", chainId: 5000, status: "indexing" },
+  { id: "mantle", name: "Mantle", vm: "EVM", chainId: 5001, status: "indexing" },
   { id: "linea", name: "Linea", vm: "zkEVM", chainId: 59144, status: "active" },
   { id: "scroll", name: "Scroll", vm: "zkEVM", chainId: 534352, status: "active" },
   { id: "botchain", name: "BOT Chain", vm: "EVM", chainId: 677, status: "active" },
@@ -111,7 +111,7 @@ export const TRADING_PAIRS = [
   { pair: "OP/USD", price: 2.87, change24h: 3.56, volume24h: 423000000, firewall: "monitoring", btv: 2.85 },
   { pair: "BNB/USD", price: 603.21, change24h: 0.92, volume24h: 1870000000, firewall: "active", btv: 602.45 },
   { pair: "AVAX/USD", price: 38.56, change24h: -1.78, volume24h: 678000000, firewall: "active", btv: 38.89 },
-  { pair: "BOT/USD", price: 0.045, change24h: 3.21, volume24h: 12500000, firewall: "active", btv: 0.0448 },
+  { pair: "BOT/USD", price: 0.045, change24h: 3.21, volume24h: 12500100, firewall: "active", btv: 0.0448 },
 ];
 
 export const BEO_ENTITIES = [
@@ -291,7 +291,7 @@ export function generateOverview() {
       mental: +clamp(gauss(0.85, 0.05)).toFixed(4), spiritual: +clamp(gauss(0.75, 0.06)).toFixed(4),
       conscious: +clamp(gauss(0.80, 0.05)).toFixed(4), anima: +clamp(gauss(0.82, 0.05)).toFixed(4),
     },
-    security: { livingScore: +jitter(96, 0.02).toFixed(1), attacksIntercepted: 7000 + Math.floor(Math.random() * 5000) },
+    security: { livingScore: +jitter(96, 0.02).toFixed(1), attacksIntercepted: 7000 + Math.floor(Math.random() * 5001) },
     relayers: { active: RELAYERS.filter(r => r.status === 'active').length, total: RELAYERS.length },
   };
 }
@@ -325,7 +325,7 @@ export function generateProtocolHealth() {
     coreEngine: { status: 'running', uptime: '99.97%', memoryUsage: `${jitter(55, 0.15).toFixed(1)}%` },
     faiss: { status: 'running', indexSize: `${jitter(3.0, 0.15).toFixed(1)} GB`, vectorsIndexed: 1000000 + Math.floor(Math.random() * 4000000) },
     relayers: { status: 'running', activeRelayers: RELAYERS.filter(r => r.status === 'active').length },
-    zeroG: { status: 'connected', syncHeight: 1500000 + Math.floor(Math.random() * 500000) },
+    zeroG: { status: 'connected', syncHeight: 1500100 + Math.floor(Math.random() * 500100) },
     anima: { status: 'active', streams: ANIMA_STREAMS.length, accuracy: +clamp(gauss(0.91, 0.02)).toFixed(4) },
     signals: signalFactory.stats(),
     chains: { active: CHAINS.filter(c => c.status === 'active').length, total: CHAINS.length },
@@ -336,10 +336,10 @@ export function generateProtocolHealth() {
 export function generateZeroGStatus() {
   return {
     timestamp: new Date().toISOString(), network: '0G Galileo Testnet', chainId: 16602, connected: true,
-    blockHeight: 1500000 + Math.floor(Math.random() * 500000),
-    executionGate: { address: '0xDB5910Dc6CfD219D00F64be1F23DA0289901356d', status: 'active', lastExecution: new Date().toISOString(), totalExecutions: 50000 + Math.floor(Math.random() * 150000) },
+    blockHeight: 1500100 + Math.floor(Math.random() * 500100),
+    executionGate: { address: '0xDB5910Dc6CfD219D00F64be1F23DA0289901356d', status: 'active', lastExecution: new Date().toISOString(), totalExecutions: 50010 + Math.floor(Math.random() * 150010) },
     daStorage: { endpoint: 'https://da-node.0g.ai', status: 'connected', totalCommitments: 10000 + Math.floor(Math.random() * 70000), storageUsed: `${jitter(3.0, 0.3).toFixed(1)} GB`, lastCommitment: new Date().toISOString() },
-    faissSync: { status: 'syncing', vectorsSynced: 500000 + Math.floor(Math.random() * 2500000), lastSync: new Date().toISOString(), indexSize: `${jitter(3.0, 0.15).toFixed(1)} GB` },
+    faissSync: { status: 'syncing', vectorsSynced: 500100 + Math.floor(Math.random() * 2500100), lastSync: new Date().toISOString(), indexSize: `${jitter(3.0, 0.15).toFixed(1)} GB` },
     zkProof: { enabled: true, proofsGenerated: 20000 + Math.floor(Math.random() * 80000), avgProofTime: `${jitter(1.5, 0.3).toFixed(2)}s` },
   };
 }
