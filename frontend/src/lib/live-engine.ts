@@ -38,10 +38,11 @@ export const CHAINS = [
   { id: "mantle", name: "Mantle", vm: "EVM", chainId: 5000, status: "indexing" },
   { id: "linea", name: "Linea", vm: "zkEVM", chainId: 59144, status: "active" },
   { id: "scroll", name: "Scroll", vm: "zkEVM", chainId: 534352, status: "active" },
+  { id: "botchain", name: "BOT Chain", vm: "EVM", chainId: 677, status: "active" },
 ];
 
 export const VM_FAMILIES = [
-  { name: "EVM", chains: 12, totalContracts: 12450, languages: ["Solidity", "Vyper", "Yul"] },
+  { name: "EVM", chains: 10, totalContracts: 14606, languages: ["Solidity", "Vyper", "Yul"] },
   { name: "SVM", chains: 1, totalContracts: 3200, languages: ["Rust", "C"] },
   { name: "WASM", chains: 2, totalContracts: 1890, languages: ["Rust", "AssemblyScript"] },
   { name: "Cairo", chains: 1, totalContracts: 760, languages: ["Cairo"] },
@@ -110,6 +111,7 @@ export const TRADING_PAIRS = [
   { pair: "OP/USD", price: 2.87, change24h: 3.56, volume24h: 423000000, firewall: "monitoring", btv: 2.85 },
   { pair: "BNB/USD", price: 603.21, change24h: 0.92, volume24h: 1870000000, firewall: "active", btv: 602.45 },
   { pair: "AVAX/USD", price: 38.56, change24h: -1.78, volume24h: 678000000, firewall: "active", btv: 38.89 },
+  { pair: "BOT/USD", price: 0.045, change24h: 3.21, volume24h: 12500000, firewall: "active", btv: 0.0448 },
 ];
 
 export const BEO_ENTITIES = [

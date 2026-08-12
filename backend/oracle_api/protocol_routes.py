@@ -12,7 +12,9 @@ from .signal_factory import SignalFactory
 router = APIRouter(prefix="/api/v1")
 
 @router.get("")
-async def root(): return {"name":"TRION Oracle","version":"3.0.0","status":"running"}
+async def root():
+    f = SignalFactory.get()
+    return {"name":"TRION Oracle","version":"3.1.0","status":"running","signalsGenerated":f.counter}
 
 @router.get("/signals/latest")
 async def latest_signals(count: int = 50):
@@ -184,5 +186,31 @@ async def endpoints():
         {"method":"GET","path":"/api/v1/beo/entities","description":"BEO entity data","auth":"public"},
         {"method":"GET","path":"/api/v1/governance/proposals","description":"Governance proposals","auth":"public"},
         {"method":"GET","path":"/api/v1/anima/streams","description":"ANIMA stream status","auth":"public"},
-        {"method":"WS","path":"/ws/signals","description":"Real-time signal feed","auth":"public"}]
+        {"method":"WS","path":"/ws/signals","description":"Real-time signal feed","auth":"public"},
+        {"method":"GET","path":"api/v1/crates/status","description":"All crate and relayer statuses","auth":"public"},
+        {"method":"GET","path":"api/v1/botchain/status","description":"BOT Chain dedicated status","auth":"public"},
+        {"method":"GET","path":"api/v1/botchain/contracts","description":"BOT Chain monitored contracts","auth":"public"}]
     return {"endpoints":eps,"total":len(eps)}
+
+@router.get("/crates/status")
+async def crates_status():
+    f = SignalFactory.get()
+    return {"timestamp":datetime.now(timezone.utc).isoformat(), **f.get_crate_statuses()}
+
+@router.get("/botchain/status")
+async def botchain_status():
+    f = SignalFactory.get()
+    result = {"timestamp":datetime.now(timezone.utc).isoformat(), "chainId":677, "chainName":"BOT Chain", "rpc":"https://rpc.botchain.ai", "explorer":"https://scan.botchain.ai/", "currency":"BOT"}
+    if f.bot_crate:
+        result["crateStatus"] = f.bot_crate.get_status()
+    if f.bot_relayer:
+        result["relayerStatus"] = f.bot_relayer.get_status()
+    bot_signals = [s for s in f.latest(50) if s.get("chain") == "botchain"]
+    result["recentBotSignals"] = len(bot_signals)
+    result["botCoherence"] = round(sum(s["coherence"] for s in bot_signals) / len(bot_signals), 4) if bot_signals else 0
+    return result
+
+@router.get("/botchain/contracts")
+async def botchain_contracts():
+    from crates.bot_chain.config import BOT_CONTRACTS
+    return {"chainId":677, "chainName":"BOT Chain", "contracts":[{"name":c["name"],"address":c["address"],"language":c["language"],"verified":c["verified"],"loc":c["loc"],"behavioralHooks":c.get("behavioralHooks",[]),"signalTypes":c.get("signalTypes",[]),"description":c.get("description","")} for c in BOT_CONTRACTS], "total":len(BOT_CONTRACTS)}

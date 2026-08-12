@@ -6,30 +6,31 @@ PORT = int(os.getenv("PORT", "5000"))
 CORS_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000", "*"]
 
 CHAINS = [
-    {"id": "arbitrum", "name": "Arbitrum One", "vm": "EVM", "chainId": 42161, "status": "active", "rpc": "https://arb1.arbitrum.io/rpc"},
-    {"id": "ethereum", "name": "Ethereum Mainnet", "vm": "EVM", "chainId": 1, "status": "active", "rpc": "https://eth.llamarpc.com"},
-    {"id": "polygon", "name": "Polygon PoS", "vm": "EVM", "chainId": 137, "status": "active", "rpc": "https://polygon-rpc.com"},
-    {"id": "optimism", "name": "Optimism", "vm": "EVM", "chainId": 10, "status": "active", "rpc": "https://mainnet.optimism.io"},
-    {"id": "base", "name": "Base", "vm": "EVM", "chainId": 8453, "status": "active", "rpc": "https://mainnet.base.org"},
-    {"id": "bsc", "name": "BNB Smart Chain", "vm": "EVM", "chainId": 56, "status": "active", "rpc": "https://bsc-rpc.publicnode.com"},
-    {"id": "avalanche", "name": "Avalanche C-Chain", "vm": "EVM", "chainId": 43114, "status": "active", "rpc": "https://api.avax.network/ext/bc/C/rpc"},
-    {"id": "solana", "name": "Solana", "vm": "SVM", "chainId": 103, "status": "active", "rpc": "https://api.mainnet-beta.solana.com"},
-    {"id": "near", "name": "NEAR Protocol", "vm": "WASM", "chainId": 1313161554, "status": "active", "rpc": "https://rpc.mainnet.near.org"},
-    {"id": "ton", "name": "TON", "vm": "TVM", "chainId": -239, "status": "active", "rpc": "https://toncenter.com/api/v2"},
-    {"id": "starknet", "name": "StarkNet", "vm": "Cairo", "chainId": 1, "status": "active", "rpc": "https://rpc.starknet.io"},
-    {"id": "sui", "name": "Sui", "vm": "Move", "chainId": 1, "status": "active", "rpc": "https://fullnode.mainnet.sui.io"},
-    {"id": "aptos", "name": "Aptos", "vm": "Move", "chainId": 1, "status": "indexing", "rpc": "https://fullnode.mainnet.aptoslabs.com"},
-    {"id": "cosmos", "name": "Cosmos Hub", "vm": "CosmWasm", "chainId": "cosmoshub-4", "status": "active", "rpc": "https://cosmos-rpc.polkachu.com"},
-    {"id": "polkadot", "name": "Polkadot", "vm": "Substrate", "chainId": 0, "status": "active", "rpc": "wss://rpc.polkadot.io"},
-    {"id": "hsk", "name": "HashKey Chain", "vm": "EVM", "chainId": 177, "status": "active", "rpc": "https://mainnet.hsk.xyz"},
-    {"id": "zksync", "name": "zkSync Era", "vm": "zkEVM", "chainId": 324, "status": "active", "rpc": "https://mainnet.era.zksync.io"},
-    {"id": "mantle", "name": "Mantle", "vm": "EVM", "chainId": 5000, "status": "indexing", "rpc": "https://rpc.mantle.xyz"},
-    {"id": "linea", "name": "Linea", "vm": "zkEVM", "chainId": 59144, "status": "active", "rpc": "https://rpc.linea.build"},
-    {"id": "scroll", "name": "Scroll", "vm": "zkEVM", "chainId": 534352, "status": "active", "rpc": "https://rpc.scroll.io"},
+    {"id": "arbitrum", "name": "Arbitrum One", "vm": "EVM", "chainId": 42161, "status": "active", "rpc": "https://arb1.arbitrum.io/rpc", "explorer": "https://arbiscan.io", "currency": "ETH"},
+    {"id": "ethereum", "name": "Ethereum Mainnet", "vm": "EVM", "chainId": 1, "status": "active", "rpc": "https://eth.llamarpc.com", "explorer": "https://etherscan.io", "currency": "ETH"},
+    {"id": "polygon", "name": "Polygon PoS", "vm": "EVM", "chainId": 137, "status": "active", "rpc": "https://polygon-rpc.com", "explorer": "https://polygonscan.com", "currency": "MATIC"},
+    {"id": "optimism", "name": "Optimism", "vm": "EVM", "chainId": 10, "status": "active", "rpc": "https://mainnet.optimism.io", "explorer": "https://optimistic.etherscan.io", "currency": "ETH"},
+    {"id": "base", "name": "Base", "vm": "EVM", "chainId": 8453, "status": "active", "rpc": "https://mainnet.base.org", "explorer": "https://basescan.org", "currency": "ETH"},
+    {"id": "bsc", "name": "BNB Smart Chain", "vm": "EVM", "chainId": 56, "status": "active", "rpc": "https://bsc-rpc.publicnode.com", "explorer": "https://bscscan.com", "currency": "BNB"},
+    {"id": "avalanche", "name": "Avalanche C-Chain", "vm": "EVM", "chainId": 43114, "status": "active", "rpc": "https://api.avax.network/ext/bc/C/rpc", "explorer": "https://snowtrace.io", "currency": "AVAX"},
+    {"id": "solana", "name": "Solana", "vm": "SVM", "chainId": 103, "status": "active", "rpc": "https://api.mainnet-beta.solana.com", "explorer": "https://explorer.solana.com", "currency": "SOL"},
+    {"id": "near", "name": "NEAR Protocol", "vm": "WASM", "chainId": 1313161554, "status": "active", "rpc": "https://rpc.mainnet.near.org", "explorer": "https://nearblocks.io", "currency": "NEAR"},
+    {"id": "ton", "name": "TON", "vm": "TVM", "chainId": -239, "status": "active", "rpc": "https://toncenter.com/api/v2", "explorer": "https://tonviewer.com", "currency": "TON"},
+    {"id": "starknet", "name": "StarkNet", "vm": "Cairo", "chainId": 1, "status": "active", "rpc": "https://rpc.starknet.io", "explorer": "https://starkscan.co", "currency": "ETH"},
+    {"id": "sui", "name": "Sui", "vm": "Move", "chainId": 1, "status": "active", "rpc": "https://fullnode.mainnet.sui.io", "explorer": "https://suiscan.xyz", "currency": "SUI"},
+    {"id": "aptos", "name": "Aptos", "vm": "Move", "chainId": 1, "status": "indexing", "rpc": "https://fullnode.mainnet.aptoslabs.com", "explorer": "https://aptoscan.com", "currency": "APT"},
+    {"id": "cosmos", "name": "Cosmos Hub", "vm": "CosmWasm", "chainId": "cosmoshub-4", "status": "active", "rpc": "https://cosmos-rpc.polkachu.com", "explorer": "https://mintscan.io/cosmos", "currency": "ATOM"},
+    {"id": "polkadot", "name": "Polkadot", "vm": "Substrate", "chainId": 0, "status": "active", "rpc": "wss://rpc.polkadot.io", "explorer": "https://polkadot.subscan.io", "currency": "DOT"},
+    {"id": "hsk", "name": "HashKey Chain", "vm": "EVM", "chainId": 177, "status": "active", "rpc": "https://mainnet.hsk.xyz", "explorer": "https://explorer.hsk.xyz", "currency": "HSK"},
+    {"id": "zksync", "name": "zkSync Era", "vm": "zkEVM", "chainId": 324, "status": "active", "rpc": "https://mainnet.era.zksync.io", "explorer": "https://explorer.zksync.io", "currency": "ETH"},
+    {"id": "mantle", "name": "Mantle", "vm": "EVM", "chainId": 5000, "status": "indexing", "rpc": "https://rpc.mantle.xyz", "explorer": "https://mantlescan.xyz", "currency": "MNT"},
+    {"id": "linea", "name": "Linea", "vm": "zkEVM", "chainId": 59144, "status": "active", "rpc": "https://rpc.linea.build", "explorer": "https://lineascan.build", "currency": "ETH"},
+    {"id": "scroll", "name": "Scroll", "vm": "zkEVM", "chainId": 534352, "status": "active", "rpc": "https://rpc.scroll.io", "explorer": "https://scrollscan.com", "currency": "ETH"},
+    {"id": "botchain", "name": "BOT Chain", "vm": "EVM", "chainId": 677, "status": "active", "rpc": "https://rpc.botchain.ai", "explorer": "https://scan.botchain.ai/", "currency": "BOT"},
 ]
 
 VM_FAMILIES = [
-    {"name": "EVM", "chains": 12, "totalContracts": 12450, "languages": ["Solidity", "Vyper", "Yul"]},
+    {"name": "EVM", "chains": 10, "totalContracts": 14606, "languages": ["Solidity", "Vyper", "Yul"]},
     {"name": "SVM", "chains": 1, "totalContracts": 3200, "languages": ["Rust", "C"]},
     {"name": "WASM", "chains": 2, "totalContracts": 1890, "languages": ["Rust", "AssemblyScript"]},
     {"name": "Cairo", "chains": 1, "totalContracts": 760, "languages": ["Cairo"]},
@@ -69,6 +70,12 @@ CONTRACTS = [
     {"name": "CrisprEngine", "language": "Solidity", "chain": "Arbitrum", "address": "0x...", "verified": False, "loc": 1345},
     {"name": "BEOCore", "language": "Solidity", "chain": "Ethereum", "address": "0x...", "verified": False, "loc": 1567},
     {"name": "Falsifiability", "language": "Python", "chain": "Off-chain", "address": "offchain", "verified": True, "loc": 2341},
+    {"name": "TrionBotOracle", "language": "Solidity", "chain": "BOT Chain", "address": "0xBOT...0001", "verified": True, "loc": 2156},
+    {"name": "BotVaultV1", "language": "Solidity", "chain": "BOT Chain", "address": "0xBOT...0002", "verified": True, "loc": 1678},
+    {"name": "BotChainBEO", "language": "Solidity", "chain": "BOT Chain", "address": "0xBOT...0003", "verified": True, "loc": 1234},
+    {"name": "BotChainCRISPR", "language": "Solidity", "chain": "BOT Chain", "address": "0xBOT...0004", "verified": False, "loc": 1890},
+    {"name": "BotChainPriceFeed", "language": "Solidity", "chain": "BOT Chain", "address": "0xBOT...0005", "verified": True, "loc": 567},
+    {"name": "BotChainGovernance", "language": "Solidity", "chain": "BOT Chain", "address": "0xBOT...0006", "verified": False, "loc": 945},
 ]
 
 RELAYERS = [
@@ -79,6 +86,7 @@ RELAYERS = [
     {"name": "0G DA Streamer", "status": "active", "chains": 1, "throughput": "1.2 MB/s", "lastPublish": "1s ago"},
     {"name": "StarkNet Relayer", "status": "active", "chains": 1, "throughput": "1.9 tx/s", "lastPublish": "12s ago"},
     {"name": "Cosmos Relayer", "status": "active", "chains": 1, "throughput": "0.7 tx/s", "lastPublish": "30s ago"},
+    {"name": "BOT Chain Relayer", "status": "active", "chains": 1, "throughput": "2.1 tx/s", "lastPublish": "1s ago"},
 ]
 
 DEPLOYMENTS = [
@@ -89,7 +97,8 @@ DEPLOYMENTS = [
     {"name": "Arbitrum Mainnet", "env": "mainnet", "status": "pending", "contracts": 2, "url": "https://arbiscan.io"},
     {"name": "0G Mainnet", "env": "mainnet", "status": "pending", "contracts": 1, "url": "https://0g.ai"},
     {"name": "Ethereum Mainnet", "env": "mainnet", "status": "planned", "contracts": 1, "url": "https://etherscan.io"},
-    {"name": "Solana Mainnet", "env": "mainnet", "status": "planned", "contracts": 1, "url": "https://explorer.solana.com"},
+ {"name": "Solana Mainnet", "env": "mainnet", "status": "planned", "contracts": 1, "url": "https://explorer.solana.com"},
+    {"name": "BOT Chain Mainnet", "env": "mainnet", "status": "active", "contracts": 6, "url": "https://scan.botchain.ai/"},
 ]
 
 TRADING_PAIRS = [
@@ -101,6 +110,7 @@ TRADING_PAIRS = [
     {"pair": "OP/USD", "price": 2.87, "change24h": 3.56, "volume24h": 423000000, "firewall": "monitoring", "btv": 2.85},
     {"pair": "BNB/USD", "price": 603.21, "change24h": 0.92, "volume24h": 1870000000, "firewall": "active", "btv": 602.45},
     {"pair": "AVAX/USD", "price": 38.56, "change24h": -1.78, "volume24h": 678000000, "firewall": "active", "btv": 38.89},
+    {"pair": "BOT/USD", "price": 0.045, "change24h": 3.21, "volume24h": 12500000, "firewall": "active", "btv": 0.0448},
 ]
 
 BEO_ENTITIES = [

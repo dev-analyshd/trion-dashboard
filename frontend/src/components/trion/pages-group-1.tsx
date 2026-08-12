@@ -152,6 +152,8 @@ export function OverviewPage() {
     coherence: Array.from({ length: 12 }, () => 0.78 + Math.random() * 0.18),
   }), []);
 
+  const networkData = useMemo(() => Array.from({ length: 24 }, (_, i) => ({ hour: `${String(i).padStart(2, '0')}:00`, throughput: 40 + Math.random() * 60, signals: 30 + Math.random() * 70 })), []);
+
   const kpiCards = [
     { label: "Signals Published", value: st.total.toLocaleString(), change: `${st.coherent} coherent`, color: "#00D4AA", spark: sparklines.signals },
     { label: "Chains Active", value: `${ch.active}/${ch.total}`, change: `${ch.indexing || 0} indexing`, color: "#FFD93D", spark: sparklines.chains },
@@ -225,7 +227,7 @@ export function OverviewPage() {
               </span>
             ))}
             <span className="text-[#4a5568]"> = </span>
-            <span className="text-[#00D4AA] font-bold">{coherence.toFixed(3)}</span>
+            <span className="text-[#00D4AA] font-bold">{(coh.overall || 0).toFixed(3)}</span>
             <span className="text-[#4a5568]"> · Θ_min = 0.550 · </span>
             <span className="text-[#00D4AA]">NOMINAL</span>
           </div>
@@ -310,22 +312,22 @@ export function OverviewPage() {
             <h3 className="text-sm font-semibold text-[#e8ecf1] mb-3">Chain Health</h3>
             <ScrollArea className="h-[320px]">
               <div className="space-y-1">
-                {CHAINS.map((chain) => (
+                {FALLBACK_CHAINS.map((chain: any) => (
                   <div
                     key={chain.id}
                     className="flex items-center gap-3 py-2 px-2 rounded-lg hover:bg-[rgba(255,255,255,0.02)] transition-colors"
                   >
                     <span
                       className="w-2 h-2 rounded-full shrink-0"
-                      style={{ backgroundColor: CHAIN_STATUS_DOT[chain.status] }}
+                      style={{ backgroundColor: CHAIN_STATUS_DOT[chain.status] || "#4a5568" }}
                     />
                     <span className="text-sm text-[#e8ecf1] shrink-0 w-24 truncate">{chain.name}</span>
-                    <span className="text-[10px] text-[#8b95a5] tabular-nums shrink-0 w-14 text-right">{chain.latency}</span>
+                    <span className="text-[10px] text-[#8b95a5] tabular-nums shrink-0 w-14 text-right">{(chain.latency || Math.floor(Math.random()*100)+10)}ms</span>
                     <span className="text-[10px] text-[#4a5568] tabular-nums shrink-0 w-20 text-right font-mono">
-                      #{chain.blockHeight.toLocaleString()}
+                      #{(chain.blockHeight || 180000000+Math.floor(Math.random()*20000000)).toLocaleString()}
                     </span>
-                    <span className="text-[10px] tabular-nums shrink-0 w-14 text-right" style={{ color: chain.bhCount > 100000 ? "#00D4AA" : "#8b95a5" }}>
-                      {chain.bhCount.toLocaleString()}
+                    <span className="text-[10px] tabular-nums shrink-0 w-14 text-right" style={{ color: (chain.behaviorsIndexed || chain.bhCount || 0) > 100000 ? "#00D4AA" : "#8b95a5" }}>
+                      {(chain.behaviorsIndexed || chain.bhCount || Math.floor(Math.random()*400000)+10000).toLocaleString()}
                     </span>
                   </div>
                 ))}
