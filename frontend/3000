@@ -1,0 +1,7 @@
+▲ Next.js 16.1.3 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://21.0.17.116:3000
+
+✓ Starting...
+✓ Ready in 641ms
+ GET /api/trion/health 200 in 566ms (compile: 548ms, render: 18ms)

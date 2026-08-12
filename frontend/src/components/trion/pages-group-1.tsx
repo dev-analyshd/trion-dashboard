@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Card,
@@ -31,13 +31,14 @@ import {
   type ChainInfo,
   type PlaneStatus,
   type TradingPair,
-  CHAINS,
-  VM_FAMILIES,
-  LIVE_SIGNALS,
+  CHAINS as FALLBACK_CHAINS,
+  VM_FAMILIES as FALLBACK_VMS,
+  LIVE_SIGNALS as FALLBACK_SIGNALS,
   PLANE_STATUSES,
-  TRADING_PAIRS,
+  TRADING_PAIRS as FALLBACK_TRADING,
   generateNewSignal,
 } from "@/lib/trion-data";
+import { useOverview, useSignals, useChains, useVmFamilies, useTradingPairs } from "@/lib/useTrionApi";
 
 // ─── Shared Animation Variants ──────────────────────────────────
 const containerVariants = {
@@ -127,13 +128,21 @@ const FIREWALL_EVENTS = [
 // 1. OVERVIEW PAGE
 // ═══════════════════════════════════════════════════════════════
 export function OverviewPage() {
-  const [signalCount, setSignalCount] = useState(51904);
-  const [vectorsIndexed, setVectorsIndexed] = useState("2.4M");
-  const [chainsActive, setChainsActive] = useState(87);
-  const [attacksIntercepted, setAttacksIntercepted] = useState(1381);
-  const [coherence, setCoherence] = useState(0.847);
-  const [signals, setSignals] = useState<SignalEntry[]>(LIVE_SIGNALS.slice(0, 20));
-  const [networkData] = useState(generateNetworkActivity);
+  const { data: overview, dataSource } = useOverview();
+  const isLive = dataSource === 'LIVE';
+  const ov = isLive && overview ? overview : {
+    signalStats: { total: 51904, coherent: 48120, warnings: 2100, intercepts: 1684, avgCoherence: 0.847 },
+    chains: { active: 18, total: 20, indexing: 2 },
+    coherence: { overall: 0.847, physical: 0.912, mental: 0.856, spiritual: 0.734, conscious: 0.801, anima: 0.823 },
+    security: { livingScore: 96.8, attacksIntercepted: 1381 },
+    latestSignals: FALLBACK_SIGNALS.slice(0, 5),
+  };
+
+  const signals = ov.latestSignals || [];
+  const st = ov.signalStats || { total: 0, coherent: 0, warnings: 0, intercepts: 0, avgCoherence: 0 };
+  const ch = ov.chains || { active: 0, total: 0 };
+  const coh = ov.coherence || { overall: 0, physical: 0, mental: 0, spiritual: 0, conscious: 0, anima: 0 };
+  const sec = ov.security || { livingScore: 0, attacksIntercepted: 0 };
 
   const sparklines = useMemo(() => ({
     signals: Array.from({ length: 12 }, () => 50 + Math.random() * 50),
@@ -143,26 +152,12 @@ export function OverviewPage() {
     coherence: Array.from({ length: 12 }, () => 0.78 + Math.random() * 0.18),
   }), []);
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setSignalCount((c) => c + Math.floor(Math.random() * 3) + 1);
-      setAttacksIntercepted((c) => c + (Math.random() > 0.85 ? 1 : 0));
-      setCoherence((c) => Math.round((c + (Math.random() - 0.48) * 0.003) * 1000) / 1000);
-      setChainsActive((c) => (Math.random() > 0.92 ? c + 1 : c));
-      setSignals((prev) => {
-        const sig = generateNewSignal();
-        return [sig, ...prev.slice(0, 19)];
-      });
-    }, 3000);
-    return () => clearInterval(interval);
-  }, []);
-
   const kpiCards = [
-    { label: "Signals Published", value: signalCount.toLocaleString(), change: "+127 last hour", color: "#00D4AA", spark: sparklines.signals },
-    { label: "Vectors Indexed", value: vectorsIndexed, change: "+12.4K today", color: "#7B61FF", spark: sparklines.vectors },
-    { label: "Chains Active", value: `${chainsActive}/100`, change: `+${chainsActive - 84} this week`, color: "#FFD93D", spark: sparklines.chains },
-    { label: "Attacks Intercepted", value: attacksIntercepted.toLocaleString(), change: "+3 today", color: "#FF6B6B", spark: sparklines.attacks },
-    { label: "System Coherence", value: coherence.toFixed(3), change: coherence > 0.84 ? "↑ Nominal" : "↓ Fluctuating", color: "#00D4AA", spark: sparklines.coherence },
+    { label: "Signals Published", value: st.total.toLocaleString(), change: `${st.coherent} coherent`, color: "#00D4AA", spark: sparklines.signals },
+    { label: "Chains Active", value: `${ch.active}/${ch.total}`, change: `${ch.indexing || 0} indexing`, color: "#FFD93D", spark: sparklines.chains },
+    { label: "Attacks Intercepted", value: sec.attacksIntercepted?.toLocaleString() || "0", change: isLive ? "LIVE" : "Mock", color: "#FF6B6B", spark: sparklines.attacks },
+    { label: "System Coherence", value: (coh.overall || 0).toFixed(3), change: (coh.overall || 0) > 0.84 ? "↑ Nominal" : "↓ Fluctuating", color: "#00D4AA", spark: sparklines.coherence },
+    { label: "Security Score", value: (sec.livingScore || 0).toFixed(1), change: isLive ? "LIVE" : "Mock", color: "#7B61FF", spark: sparklines.vectors },
   ];
 
   const weights = ["α", "β", "γ", "δ", "ε"];
@@ -191,7 +186,7 @@ export function OverviewPage() {
         <div className="glass-card p-5">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold text-[#e8ecf1]">Five-Plane Coherence Pipeline</h3>
-            <span className="text-[11px] text-[#8b95a5] font-mono">MF = Σ(wᵢ · Pᵢ) = {coherence.toFixed(3)}</span>
+            <span className="text-[11px] text-[#8b95a5] font-mono">MF = Σ(wᵢ · Pᵢ) = {(coh.overall || 0).toFixed(3)}</span>
           </div>
           <div className="flex items-center gap-1 overflow-x-auto pb-2">
             {PLANE_STATUSES.map((plane, i) => (
@@ -390,11 +385,16 @@ type SignalFilter = (typeof SIGNAL_FILTERS)[number];
 
 export function SignalsPage() {
   const [filter, setFilter] = useState<SignalFilter>("ALL");
-  const [signals, setSignals] = useState<SignalEntry[]>(LIVE_SIGNALS);
+  const { data: signalsData, dataSource } = useSignals(80);
+  const isLive = dataSource === 'LIVE';
+  const signals = (isLive && signalsData?.signals) ? signalsData.signals : FALLBACK_SIGNALS.slice(0, 80);
+  const [localSignals, setLocalSignals] = useState(signals);
 
+  // Keep local signals in sync with API data, but also add new ones locally
+  useEffect(() => { setLocalSignals(signals); }, [signals]);
   const addSignal = useCallback(() => {
     const sig = generateNewSignal();
-    setSignals((prev) => [sig, ...prev].slice(0, 80));
+    setLocalSignals((prev) => [sig, ...prev].slice(0, 80));
   }, []);
 
   useEffect(() => {
@@ -403,9 +403,9 @@ export function SignalsPage() {
   }, [addSignal]);
 
   const filtered = useMemo(() => {
-    if (filter === "ALL") return signals;
-    return signals.filter((s) => s.status === filter);
-  }, [signals, filter]);
+    if (filter === "ALL") return localSignals;
+    return localSignals.filter((s) => s.status === filter);
+  }, [localSignals, filter]);
 
   return (
     <motion.div variants={containerVariants} initial="hidden" animate="visible" className="space-y-4">
@@ -423,7 +423,7 @@ export function SignalsPage() {
           >
             {f.replace(/_/g, " ")}
             <span className="ml-1.5 opacity-60">
-              {f === "ALL" ? signals.length : signals.filter((s) => s.status === f).length}
+              {f === "ALL" ? localSignals.length : localSignals.filter((s) => s.status === f).length}
             </span>
           </button>
         ))}
@@ -528,19 +528,28 @@ const SORT_ARROWS: Record<string, string> = {
 };
 
 export function ChainsPage() {
-  const [sortKey, setSortKey] = useState<string>("bhCount");
+  const { data: chainsData, dataSource } = useChains();
+  const { data: vmData } = useVmFamilies();
+  const isLive = dataSource === 'LIVE';
+
+  const displayChains = (isLive && chainsData?.chains?.length) ? chainsData.chains : FALLBACK_CHAINS.map(c => ({...c, latency: Math.floor(Math.random()*100)+10, blockHeight: 180000000+Math.floor(Math.random()*20000000), behaviorsIndexed: Math.floor(Math.random()*400000)+10000}));
+  const displayVMs = (isLive && vmData?.families?.length) ? vmData.families.map(v => ({...v, color: FALLBACK_VMS.find(f=>f.name===v.name)?.color || '#00D4AA', description: v.languages?.join(', '), status: 'online'})) : FALLBACK_VMS;
+
+  const chainCount = isLive && chainsData ? `${chainsData.active}/${chainsData.total}` : `${displayChains.length}`;
+
+  const [sortKey, setSortKey] = useState<string>("blockHeight");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const sortedChains = useMemo(() => {
-    return [...CHAINS].sort((a, b) => {
-      const aVal = (a as Record<string, unknown>)[sortKey];
-      const bVal = (b as Record<string, unknown>)[sortKey];
+    return [...displayChains].sort((a, b) => {
+      const aVal = (a as any)[sortKey];
+      const bVal = (b as any)[sortKey];
       if (typeof aVal === "number" && typeof bVal === "number") {
         return sortDir === "desc" ? bVal - aVal : aVal - bVal;
       }
       return 0;
     });
-  }, [sortKey, sortDir]);
+  }, [displayChains, sortKey, sortDir]);
 
   const handleSort = useCallback((key: string) => {
     setSortKey((prev) => {
@@ -554,10 +563,10 @@ export function ChainsPage() {
   }, []);
 
   const pieData = useMemo(() => {
-    return VM_FAMILIES.filter((v) => v.chains > 0).map((vm) => ({
+    return displayVMs.filter((v) => v.chains > 0).map((vm) => ({
       name: vm.name,
       value: vm.chains,
-      color: vm.color,
+      color: (vm as any).color || '#00D4AA',
     }));
   }, []);
 
@@ -567,26 +576,24 @@ export function ChainsPage() {
     { key: "status", label: "Status" },
     { key: "latency", label: "Latency" },
     { key: "blockHeight", label: "Block Height" },
-    { key: "bhCount", label: "BH Records" },
-    { key: "tvl", label: "TVL" },
-    { key: "tps", label: "TPS" },
+    { key: "behaviorsIndexed", label: "Behaviors Indexed" },
   ];
 
   return (
     <motion.div variants={containerVariants} initial="hidden" animate="visible" className="space-y-6">
       {/* VM Family Cards */}
       <motion.div variants={itemVariants}>
-        <h3 className="text-sm font-semibold text-[#e8ecf1] mb-3">VM Families — {VM_FAMILIES.length} Machines</h3>
+        <h3 className="text-sm font-semibold text-[#e8ecf1] mb-3">VM Families — {displayVMs.length} Machines</h3>
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-          {VM_FAMILIES.map((vm) => (
+          {displayVMs.map((vm) => (
             <motion.div key={vm.name} variants={fastItemVariants}>
               <div className="glass-card p-3 relative overflow-hidden group hover:bg-[rgba(255,255,255,0.02)] transition-colors">
                 <div
                   className="absolute left-0 top-0 bottom-0 w-[3px] rounded-l-xl"
-                  style={{ background: `linear-gradient(180deg, ${vm.color}, ${vm.color}40)` }}
+                  style={{ background: `linear-gradient(180deg, ${(vm as any).color || '#00D4AA'}, ${(vm as any).color || '#00D4AA'}40)` }}
                 />
                 <div className="flex items-center gap-2 mb-2 pl-2">
-                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: vm.color }} />
+                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: (vm as any).color || '#00D4AA' }} />
                   <span className="text-[13px] font-bold text-[#e8ecf1]">{vm.name}</span>
                 </div>
                 <div className="pl-2 space-y-1">
@@ -615,7 +622,7 @@ export function ChainsPage() {
         <motion.div variants={itemVariants} className="lg:col-span-3">
           <div className="glass-card overflow-hidden">
             <div className="p-4 border-b border-[rgba(255,255,255,0.06)]">
-              <h3 className="text-sm font-semibold text-[#e8ecf1]">All {CHAINS.length} Chains</h3>
+              <h3 className="text-sm font-semibold text-[#e8ecf1]">All {chainCount} Chains</h3>
             </div>
             <ScrollArea className="h-[420px]">
               <table className="w-full text-[11px] min-w-[700px]">
@@ -638,32 +645,27 @@ export function ChainsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedChains.map((chain) => (
+                  {sortedChains.map((chain: any) => (
                     <tr key={chain.id} className="border-b border-[rgba(255,255,255,0.06)] hover:bg-[rgba(255,255,255,0.015)] transition-colors">
                       <td className="py-2.5 px-3">
-                        <span className="flex items-center gap-2">
-                          <span className="text-sm" style={{ color: chain.color }}>{chain.icon}</span>
-                          <span className="text-[#e8ecf1] font-medium">{chain.name}</span>
-                        </span>
+                        <span className="text-[#e8ecf1] font-medium">{chain.name}</span>
                       </td>
                       <td className="py-2.5 px-3">
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium" style={{ color: chain.color, backgroundColor: `${chain.color}18` }}>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium" style={{ color: '#00D4AA', backgroundColor: '#00D4AA18' }}>
                           {chain.vm}
                         </span>
                       </td>
                       <td className="py-2.5 px-3 text-right">
                         <span className="inline-flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: CHAIN_STATUS_DOT[chain.status] }} />
+                          <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: chain.status === 'active' ? '#00D4AA' : '#FFD93D' }} />
                           <span className="capitalize text-[#c0c6d0]">{chain.status}</span>
                         </span>
                       </td>
-                      <td className="py-2.5 px-3 text-right tabular-nums text-[#8b95a5]">{chain.latency}</td>
-                      <td className="py-2.5 px-3 text-right tabular-nums text-[#c0c6d0] font-mono">#{chain.blockHeight.toLocaleString()}</td>
-                      <td className="py-2.5 px-3 text-right tabular-nums" style={{ color: chain.bhCount > 100000 ? "#00D4AA" : "#8b95a5" }}>
-                        {chain.bhCount.toLocaleString()}
+                      <td className="py-2.5 px-3 text-right tabular-nums text-[#8b95a5]">{chain.latency ? chain.latency + 'ms' : '—'}</td>
+                      <td className="py-2.5 px-3 text-right tabular-nums text-[#c0c6d0] font-mono">#{(chain.blockHeight || 0).toLocaleString()}</td>
+                      <td className="py-2.5 px-3 text-right tabular-nums" style={{ color: (chain.behaviorsIndexed || 0) > 100000 ? '#00D4AA' : '#8b95a5' }}>
+                        {(chain.behaviorsIndexed || 0).toLocaleString()}
                       </td>
-                      <td className="py-2.5 px-3 text-right tabular-nums text-[#c0c6d0]">{chain.tvl || "—"}</td>
-                      <td className="py-2.5 px-3 text-right tabular-nums text-[#8b95a5]">{chain.tps?.toLocaleString() || "—"}</td>
                     </tr>
                   ))}
                 </tbody>

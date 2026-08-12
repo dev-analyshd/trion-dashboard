@@ -1,15 +1,17 @@
 "use client";
 
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Activity, Shield, Database, Brain, Eye, Lock, Cpu, Radio,
   Globe2, Bell, Search, Zap, TrendingUp, Layers, Fingerprint,
   Heart, Settings, Key, GitBranch, FileCode, Users, Wifi,
-  Hexagon, Menu, X, ChevronRight, RefreshCw, type LucideIcon,
+  Hexagon, Menu, X, ChevronRight, RefreshCw, WifiOff, type LucideIcon,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useBackendHealth } from "@/lib/useTrionApi";
+import { API_BASE } from "@/lib/api-client";
 
 // Page components
 import { OverviewPage, SignalsPage, ChainsPage, TradingPage } from "@/components/trion/pages-group-1";
@@ -122,6 +124,14 @@ export default function TrionDashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [lastRefresh, setLastRefresh] = useState(new Date());
+
+  // Live backend health check
+  const { data: healthData, dataSource: healthSource } = useBackendHealth();
+  const backendOnline = healthSource === 'LIVE';
+
+  useEffect(() => {
+    if (healthSource === 'LIVE') setLastRefresh(new Date());
+  }, [healthData, healthSource]);
 
   const handleNavClick = useCallback((id: string) => {
     setActivePage(id);
@@ -314,12 +324,12 @@ export default function TrionDashboard() {
                   )}
                 </div>
                 <div className="flex items-center gap-2 mt-1">
-                  <PulsingDot color="#00D4AA" size={4} />
-                  <span className="text-[10px] font-medium" style={{ color: "#00D4AA" }}>Production</span>
+                  <PulsingDot color={backendOnline ? "#00D4AA" : "#FF5252"} size={4} />
+                  <span className="text-[10px] font-medium" style={{ color: backendOnline ? "#00D4AA" : "#FF5252" }}>{backendOnline ? "Production" : "Reconnecting..."}</span>
                   <span className="text-[10px] text-[#2a2f3a]">·</span>
                   <span className="text-[10px] text-[#4a5568]">Behavioral Truth Oracle</span>
                   <span className="text-[10px] text-[#2a2f3a]">·</span>
-                  <span className="text-[10px] text-[#4a5568]">87 chains · 15 VM families</span>
+                  <span className="text-[10px] text-[#4a5568]">20 chains · 12 VM families</span>
                 </div>
               </div>
             </div>
@@ -356,12 +366,14 @@ export default function TrionDashboard() {
               <div
                 className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg"
                 style={{
-                  backgroundColor: "rgba(0, 212, 170, 0.06)",
-                  border: "1px solid rgba(0, 212, 170, 0.15)",
+                  backgroundColor: backendOnline ? "rgba(0, 212, 170, 0.06)" : "rgba(255, 82, 82, 0.06)",
+                  border: backendOnline ? "1px solid rgba(0, 212, 170, 0.15)" : "1px solid rgba(255, 82, 82, 0.15)",
                 }}
               >
-                <PulsingDot color="#00D4AA" size={4} />
-                <span className="text-[10px] font-semibold" style={{ color: "#00D4AA" }}>CONNECTED</span>
+                {backendOnline
+                  ? <PulsingDot color="#00D4AA" size={4} />
+                  : <WifiOff className="w-3 h-3 text-[#FF5252]" />}
+                <span className="text-[10px] font-semibold" style={{ color: backendOnline ? "#00D4AA" : "#FF5252" }}>{backendOnline ? "LIVE DATA" : "OFFLINE"}</span>
               </div>
             </div>
           </div>
@@ -395,23 +407,23 @@ export default function TrionDashboard() {
         >
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-1.5">
-              <StatusDot status="online" size={4} />
+              <StatusDot status={backendOnline ? "online" : "offline"} size={4} />
               <span>Core Engine</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <StatusDot status="online" size={4} />
+              <StatusDot status={backendOnline ? "online" : "offline"} size={4} />
               <span>FAISS</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <StatusDot status="online" size={4} />
+              <StatusDot status={backendOnline ? "online" : "offline"} size={4} />
               <span>Relayers</span>
             </div>
             <div className="hidden sm:flex items-center gap-1.5">
-              <StatusDot status="online" size={4} />
+              <StatusDot status={backendOnline ? "online" : "offline"} size={4} />
               <span>0G</span>
             </div>
             <div className="hidden md:flex items-center gap-1.5">
-              <StatusDot status="indexing" size={4} />
+              <StatusDot status={backendOnline ? "indexing" : "offline"} size={4} />
               <span>ANIMA</span>
             </div>
           </div>
